@@ -31,8 +31,8 @@ async function onSubmit() {
 <template>
   <div class="auth-shell">
     <form class="auth-card" @submit.prevent="onSubmit">
-      <h1>Вход</h1>
-      <p class="muted">Agent Chat</p>
+      <h1 class="auth-shell-title">Вход</h1>
+      <p class="auth-shell-subtitle muted">Agent Chat</p>
 
       <label>
         Email

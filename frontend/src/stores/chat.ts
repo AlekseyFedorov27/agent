@@ -165,6 +165,29 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  async function deleteThread(id: string) {
+    if (loading.value) return
+    loading.value = true
+    error.value = null
+    try {
+      await agentApi.deleteThread(id)
+      threads.value = threads.value.filter((t) => t.thread_id !== id)
+
+      // Если удалили активный тред — переключаемся на другой или чистим
+      if (threadId.value === id) {
+        if (threads.value.length > 0) {
+          await loadThread(threads.value[0].thread_id)
+        } else {
+          newChat()
+        }
+      }
+    } catch (e) {
+      error.value = extractApiError(e)
+    } finally {
+      loading.value = false
+    }
+  }
+
   // --- Новый чат / сброс -------------------------------------------------
   function newChat() {
     items.value = []
@@ -186,6 +209,6 @@ export const useChatStore = defineStore('chat', () => {
     // getters
     canSend, lastAssistantMessage,
     // actions
-    send, decide, loadThreads, loadThread, newChat, reset,
+    send, decide, loadThreads, loadThread, newChat, reset, deleteThread
   }
 })

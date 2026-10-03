@@ -21,6 +21,15 @@ const roleClass = computed(() => {
   }
 })
 
+const roleLabel = computed(() => {
+  switch (props.item.type) {
+    case 'human': return 'Вы'
+    case 'ai': return 'Агент'
+    case 'tool': return 'Инструмент'
+    case 'system': return 'Система'
+    default: return props.item.type
+  }
+})
 
 const hasToolCalls = computed(() => !!props.item.tool_calls?.length)
 const hasContent = computed(() => (props.item.content || '').trim().length > 0)
@@ -45,6 +54,8 @@ async function exportPdf() {
 <template>
   <div class="msg" :class="roleClass">
     <div class="msg-head">
+      <span class="role">{{ roleLabel }}</span>
+
       <button
         v-if="canExport"
         class="ghost-btn pdf-btn"

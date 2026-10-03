@@ -6,6 +6,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useChatStore } from '@/stores/chat'
 import MessageItem from '@/components/MessageItem.vue'
 import ApprovalCard from '@/components/ApprovalCard.vue'
+import ConfirmModal from '@/components/ConfirmModal.vue'
 
 const auth = useAuthStore()
 const chat = useChatStore()
@@ -18,6 +19,24 @@ const {
 const draft = ref('')
 const listEl = ref<HTMLElement | null>(null)
 
+// --- confirm delete -----------------------------------------------------
+const deleteTarget = ref<{ id: string; title: string } | null>(null)
+
+function askDelete(t: { thread_id: string; title: string }) {
+  deleteTarget.value = { id: t.thread_id, title: t.title }
+}
+
+function cancelDelete() {
+  deleteTarget.value = null
+}
+
+async function confirmDelete() {
+  const target = deleteTarget.value
+  deleteTarget.value = null
+  if (target) await chat.deleteThread(target.id)
+}
+
+// --- scroll / lifecycle -------------------------------------------------
 function scrollToBottom() {
   nextTick(() => {
     if (listEl.value) listEl.value.scrollTop = listEl.value.scrollHeight
@@ -29,7 +48,6 @@ watch(pendingApproval, scrollToBottom)
 
 onMounted(async () => {
   await chat.loadThreads()
-  // восстанавливаем последний тред, если он есть в списке
   if (threadId.value && threads.value.some((t) => t.thread_id === threadId.value)) {
     await chat.loadThread(threadId.value)
   } else if (threads.value.length) {
@@ -38,6 +56,7 @@ onMounted(async () => {
   scrollToBottom()
 })
 
+// --- send / misc --------------------------------------------------------
 async function send() {
   const text = draft.value
   if (!text.trim() || !canSend.value) return
@@ -97,7 +116,7 @@ const suggestions = [
           Пока нет диалогов
         </div>
 
-        <button
+        <div
           v-for="t in threads"
           :key="t.thread_id"
           class="thread-item"
@@ -105,12 +124,19 @@ const suggestions = [
           @click="selectThread(t.thread_id)"
         >
           <div class="thread-title">{{ t.title }}</div>
+
           <div class="thread-meta">
             <span class="thread-time">{{ fmtDate(t.updated_at) }}</span>
             <span v-if="t.status === 'interrupted'" class="thread-badge">⏸</span>
             <span v-else-if="t.status === 'failed'" class="thread-badge err">!</span>
           </div>
-        </button>
+
+          <button
+            class="thread-delete"
+            title="Удалить тред"
+            @click.stop="askDelete(t)"
+          >×</button>
+        </div>
       </div>
 
       <div class="sidebar-foot">
@@ -174,11 +200,25 @@ const suggestions = [
             @keydown="onKeydown"
           ></textarea>
 
-          <button class="btn-submit-message" type="submit" :disabled="!canSend || !draft.trim()">
-            <img src="@/assets/arrow.svg">
+          <button type="submit" :disabled="!canSend || !draft.trim()">
+            Отправить
           </button>
         </form>
       </footer>
     </div>
+
+    <!-- Confirm dialog -->
+    <ConfirmModal
+      :open="!!deleteTarget"
+      title="Удалить диалог?"
+      :message="deleteTarget
+        ? `«${deleteTarget.title}» будет удалён вместе со всей историей сообщений. Это действие нельзя отменить.`
+        : ''"
+      confirm-text="Удалить"
+      cancel-text="Отмена"
+      danger
+      @confirm="confirmDelete"
+      @cancel="cancelDelete"
+    />
   </div>
 </template>

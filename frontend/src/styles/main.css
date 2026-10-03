@@ -83,6 +83,14 @@ input:focus, textarea:focus { border-color: var(--accent); }
   padding: 24px;
   background: radial-gradient(1000px 600px at 50% -10%, rgba(99, 102, 241, 0.15), transparent 60%);
 }
+
+.auth-shell-subtitle, .auth-shell-title{
+  display: flex;
+  justify-content: center;
+  margin: 0;
+}
+
+
 .auth-card {
   width: 100%;
   max-width: 400px;
@@ -183,7 +191,7 @@ input:focus, textarea:focus { border-color: var(--accent); }
 
 .msg-head {
   display: flex;
-  justify-content: end;
+  justify-content: space-between;
   align-items: center;
   margin-bottom: 8px;
 }
@@ -439,6 +447,110 @@ form .btn-submit-message {
   border-right: none;
   height: auto;   /* растягивается по grid */
   min-height: 0;
+}
+
+/* ---------- Delete button on thread item ---------- */
+.thread-item {
+  position: relative;
+}
+
+.thread-delete {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.12s ease, background 0.12s ease, color 0.12s ease;
+}
+
+.thread-item:hover .thread-delete,
+.thread-item.active .thread-delete {
+  opacity: 1;
+}
+
+.thread-item .thread-delete:hover {
+  color: var(--text);
+}
+
+/* ---------- Modal ---------- */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(2px);
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  z-index: 1000;
+}
+
+.modal-card {
+  width: 100%;
+  max-width: 420px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 22px 22px 18px;
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.modal-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.modal-message {
+  margin: 0;
+  color: var(--muted);
+  font-size: 14.5px;
+  line-height: 1.5;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 6px;
+}
+
+.btn-danger {
+  background: var(--danger);
+  color: white;
+}
+.btn-danger:hover:not(:disabled) {
+  background: #dc2626;
+}
+
+/* Анимация появления */
+.modal-fade-enter-active,
+.modal-fade-leave-active {
+  transition: opacity 0.15s ease;
+}
+.modal-fade-enter-from,
+.modal-fade-leave-to {
+  opacity: 0;
+}
+.modal-fade-enter-active .modal-card,
+.modal-fade-leave-active .modal-card {
+  transition: transform 0.15s ease;
+}
+.modal-fade-enter-from .modal-card,
+.modal-fade-leave-to .modal-card {
+  transform: translateY(6px) scale(0.98);
 }
 
 /* Адаптив: на узком экране сайдбар убираем */
