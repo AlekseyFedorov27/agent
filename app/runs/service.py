@@ -1,9 +1,8 @@
 import uuid
 from datetime import datetime, timezone
-
-from sqlalchemy import select
+from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
-
+from app.hitl.models import Approval
 from app.runs.models import Event, Run, RunStatus
 
 
@@ -78,3 +77,31 @@ async def add_event(
     return event
 
 
+async def delete_thread(
+    session: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    thread_id: str,
+) -> int:
+    """
+    Удаляет все runs (events — cascade) и связанные approvals для thread_id.
+    Возвращает количество удалённых runs.
+    """
+    # 1. Approvals — у них FK на runs с ondelete=SET NULL, поэтому
+    #    при удалении runs они НЕ удалятся. Чистим вручную.
+    await session.execute(
+        delete(Approval).where(
+            Approval.user_id == user_id,
+            Approval.thread_id == thread_id,
+        )
+    )
+
+    # 2. Runs — events удалятся каскадом (ondelete=CASCADE на FK).
+    result = await session.execute(
+        delete(Run).where(
+            Run.user_id == user_id,
+            Run.thread_id == thread_id,
+        )
+    )
+    await session.commit()
+    return result.rowcount or 0

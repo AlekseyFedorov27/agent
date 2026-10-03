@@ -76,4 +76,8 @@ export const agentApi = {
     const { data } = await http.get<ApprovalOut>(`/approvals/${id}`)
     return data
   },
+
+  async deleteThread(threadId: string): Promise<void> {
+    await http.delete(`/runs/threads/${encodeURIComponent(threadId)}`)
+  },
 }
