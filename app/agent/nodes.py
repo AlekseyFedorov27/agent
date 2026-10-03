@@ -6,14 +6,50 @@ from app.agent.llm import get_llm
 from app.agent.state import AgentState
 from app.agent.tools import calculator
 
-SYSTEM_PROMPT = (
-    "Ты — ассистент, который умеет считать. "
-    "Для любых арифметических выражений обязательно используй инструмент "
-    "`calculator`. Не считай в уме. Отвечай кратко и по делу на русском."
-)
+SYSTEM_PROMPT = """Ты — ассистент-калькулятор. Отвечай на русском языке.
+
+ПРАВИЛА:
+1. Для любых арифметических выражений обязательно вызывай инструмент `calculator`.
+   Никогда не считай в уме.
+2. Всегда форматируй ответ в Markdown:
+   - если шагов больше одного — нумерованный список;
+   - формулы и промежуточные результаты — инлайн-кодом: `(123 + 456) * 7`;
+   - итоговый ответ — **жирным**;
+   - заголовки — через `##` (например, «## Решение», «## Ответ»).
+3. Не оборачивай весь ответ в один блок кода — только формулы/код.
+4. Отвечай кратко: без воды, без повторов условия задачи.
+
+ПРИМЕР ОТВЕТА:
+
+## Решение
+1. Выражение: `(123 + 456) * 7`
+2. Промежуточный результат: `579`
+3. Итог: **4053**
+
+## Ответ
+**4053**
+"""
 
 TOOLS = [calculator]
 tool_node = ToolNode(TOOLS)
+
+
+def _ensure_markdown(text: str) -> str:
+    """
+    Мягкая страховка: если модель вернула plain text, разбиваем его
+    на абзацы, чтобы markdown-it сделал <p>, а не склеил в одну строку.
+    Уже размеченный текст не трогаем.
+    """
+    if not text or not text.strip():
+        return text
+
+    import re
+    # Уже есть Markdown? — не трогаем
+    if re.search(r"(^#{1,6} |\*\*.+?\*\*|```|^\s*[-*] |^\s*\d+\. )", text, re.M):
+        return text
+
+    paragraphs = [p.strip() for p in text.split("\n") if p.strip()]
+    return "\n\n".join(paragraphs)
 
 
 def llm_node(state: AgentState) -> dict:
@@ -24,6 +60,13 @@ def llm_node(state: AgentState) -> dict:
         messages = [SystemMessage(content=SYSTEM_PROMPT), *messages]
 
     response = llm.invoke(messages)
+
+    # Применяем только к текстовым ответам.
+    # Если response содержит tool_calls — content часто пустой,
+    # и трогать его нельзя.
+    if not getattr(response, "tool_calls", None) and response.content:
+        response.content = _ensure_markdown(response.content)
+
     return {"messages": [response]}
 
 
