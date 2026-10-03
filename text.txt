@@ -1,0 +1,216 @@
+Handoff: LangGraph Agent Backend
+Что это
+Backend для LangGraph-агента с Human-in-the-Loop: FastAPI + PostgreSQL + JWT-auth + Ollama + SSE-стриминг. Модульная архитектура, готовая к расширению (Redis, Celery, Observability).
+
+Стек: Python 3.12, FastAPI, SQLAlchemy 2.0 (async), asyncpg, Alembic, LangGraph, langgraph-checkpoint-postgres (psycopg v3), ChatOllama (qwen3:4b-instruct), JWT (python-jose), bcrypt, uv.
+
+Окружение: Windows, локальный PostgreSQL (postgresql+asyncpg://postgres:postgres@localhost:5432/agent_db), Ollama на localhost:11434. Запуск через python run.py (не uv run — конфликт с занятыми файлами).
+
+Структура
+text
+app/
+├── main.py                     # create_app, lifespan
+├── config.py                   # Pydantic Settings
+├── core/
+│   ├── database.py             # Base, engine, session_factory, get_db, dispose_db
+│   ├── security.py             # bcrypt, JWT (access/refresh)
+│   └── exceptions.py           # NotFound, Conflict, Unauthorized, Forbidden
+├── auth/                       # User model, JWT, register/login/refresh/me
+├── agent/
+│   ├── state.py                # AgentState (messages + approval_decision)
+│   ├── tools.py                # calculator (AST-based, безопасный)
+│   ├── llm.py                  # ChatOllama singleton (lru_cache)
+│   ├── nodes.py                # llm_node, approval_node (interrupt), route_*
+│   ├── checkpointer.py         # AsyncPostgresSaver init/close/get
+│   ├── graph.py                # build_graph(checkpointer) → CompiledStateGraph
+│   ├── runtime.py              # AgentRuntimeService: start/resume/stream/get_state
+│   ├── dependencies.py         # get_runtime (из app.state)
+│   ├── schemas.py              # RunRequest, RunResponse, MessageOut
+│   └── router.py               # POST /agent/run, POST /agent/stream (SSE), GET /agent/status/{tid}
+├── hitl/
+│   ├── models.py               # Approval (FK user, run)
+│   ├── service.py              # create_pending, decide, sync_pending_interrupts
+│   └── router.py               # GET /approvals, POST /approvals/{id}/decide
+└── runs/
+    ├── models.py               # Run, Event (+ RunStatus, EventType)
+    ├── service.py              # create_run, update_status, add_event, list_*
+    └── router.py               # GET /runs, GET /runs/{id}, GET /runs/{id}/events
+
+alembic/                        # async-шаблон, env.py импортирует все модели
+run.py                          # WindowsSelectorEventLoopPolicy + uvicorn
+Схема БД (миграции)
+Наши таблицы (Alembic):
+
+users — id (UUID), email (unique), hashed_password, is_active, is_superuser, timestamps
+
+approvals — id, user_id FK, run_id FK (nullable, SET NULL), thread_id, interrupt_id, status (pending/approved/rejected), payload (JSONB), comment, decided_at
+
+runs — id, user_id FK, thread_id, status (running/interrupted/completed/failed), input (JSONB), created_at, completed_at
+
+events — id, run_id FK, type (llm_end/tool_end/interrupt/resume/end/error/node_update), payload (JSONB), created_at
+
+LangGraph-таблицы (управляются AsyncPostgresSaver.setup()): checkpoints, checkpoint_blobs, checkpoint_writes, checkpoint_migrations. В миграциях не создаются — в alembic/env.py есть include_object, который их фильтрует.
+
+Важно: Alembic env.py импортирует app.auth.models, app.hitl.models, app.runs.models — иначе autogenerate падает с NoReferencedTableError.
+
+Граф
+text
+START → llm ─┬─→ approval ─┬─→ tools → llm
+             │              └─→ llm (rejected)
+             └─→ END
+llm_node — ChatOllama с bind_tools([calculator]), системный промпт по-русски
+
+route_after_llm — если tool_calls → approval, иначе END
+
+approval_node — вызывает interrupt({type: tool_approval, tool_calls}). При resume возвращает решение. Если rejected — добавляет ToolMessage("Пользователь отклонил вызов инструмента.") и идёт в llm
+
+tool_node — стандартный ToolNode([calculator])
+
+Checkpointer: AsyncPostgresSaver держится открытым на весь lifespan (context manager). URL конвертируется postgresql+asyncpg:// → postgresql://.
+
+Ключевые механики
+HITL flow:
+
+POST /agent/run → создаёт Run (status=running) → runtime.start_run → graph.ainvoke
+
+LLM запрашивает tool_call → approval_node вызывает interrupt() → граф останавливается
+
+Проверяем state.next — если непусто, Run.status=interrupted, создаём Approval через sync_pending_interrupts
+
+POST /approvals/{id}/decide → обновляет Approval → runtime.resume_run(Command(resume={approved, comment}))
+
+Resume: approval_node выполняется заново, interrupt() возвращает значение → переход в tools или llm
+
+Run обновляется до completed/interrupted (если новый interrupt)
+
+SSE stream (POST /agent/stream):
+
+Возвращает StreamingResponse(media_type="text/event-stream")
+
+Отдельная БД-сессия через get_session_factory() (не request-scoped — иначе закроется до конца стрима)
+
+События: run_started → llm_end (пишется в БД, не в SSE) → interrupt → interrupted → completed/error
+
+runtime.stream_run использует graph.astream(stream_mode="updates") с callback on_event для записи в БД
+
+Проверенный функционал
+Register → Login → JWT (access + refresh) → /auth/me ✓
+
+POST /agent/run: обычный ответ + tool_call → interrupt ✓
+
+POST /approvals/{id}/decide: approve → tool выполняется; reject → LLM отвечает без tool ✓
+
+Persist: тот же thread_id → граф помнит контекст ✓
+
+GET /runs — список с фильтром по статусу ✓
+
+GET /runs/{id}/events — полный audit log (включая llm_end, которые не идут в SSE) ✓
+
+SSE: run_started → interrupt → interrupted ✓
+
+Известные особенности
+Windows event loop: run.py ставит WindowsSelectorEventLoopPolicy до импорта uvicorn. Иначе asyncpg рвёт соединения с WinError 10054.
+
+uv run и запущенный uvicorn: uv пытается синхронизировать venv и падает с os error 5 на занятых файлах. Запускать приложение через python run.py, а не uv run. Если нужно uv run — сначала остановить uvicorn.
+
+PowerShell + curl: использовать Invoke-RestMethod + ConvertTo-Json, либо curl.exe с бэктиками для экранирования. Внутри одинарных кавычек \" не работает.
+
+websockets иногда ломается после неудачных uv run — лечится python -m pip install --force-reinstall websockets.
+
+Ollama qwen3:4b-instruct читерит в reject-сценарии: отвечает «100 * 5 = 500» вместо отказа, хотя инструмент отклонён. Не баг кода — модель. Лечится усилением промпта или большей моделью (отложено).
+
+Что дальше (рекомендация)
+Tests — единственное, что уменьшает риск дальнейших изменений. План:
+
+tests/conftest.py: фикстуры test_engine/test_session (отдельная БД agent_test), test_client (httpx AsyncClient), authenticated_client, mock_llm (FakeChatModel с детерминированным tool_call)
+
+tests/unit/: security, auth.service, hitl.service, runs.service, agent.tools
+
+tests/integration/: auth_flow, agent_flow (run→interrupt→approve→completed), agent_reject, stream
+
+Не покрываем: SSE-тайминги (флаки), реальную Ollama (медленно)
+
+Альтернативы (после тестов):
+
+Observability: structured logging (JSON + run_id/thread_id/user_id), OpenTelemetry, Prometheus
+
+SSE refactor: async-итератор вместо callback — чтобы llm_end/tool_end шли в UI
+
+Redis: rate limiting на /auth/login, ревокация refresh
+
+Celery: вынести долгие прогоны из HTTP
+
+Полезные команды
+powershell
+# Запуск
+python run.py
+
+# Миграции
+uv run alembic revision --autogenerate -m "описание"
+uv run alembic upgrade head
+uv run alembic downgrade -1
+uv run alembic current
+
+# Проверить metadata (все 4 таблицы)
+python -c "from app.core.database import Base; import app.auth.models, app.hitl.models, app.runs.models; print(sorted(Base.metadata.tables.keys()))"
+# → ['approvals', 'events', 'runs', 'users']
+
+# Проверить роуты приложения
+python -c "from app.main import app; print([r.path for r in app.routes if hasattr(r, 'path')])"
+
+# Прибить висящие процессы
+Get-Process python | Where-Object { $_.Path -like "*LANGRAPH_AGENT*" } | Stop-Process -Force
+
+# Прямая проверка БД (без psql)
+python -c "
+import asyncio, asyncpg
+async def main():
+    conn = await asyncpg.connect('postgresql://postgres:postgres@localhost:5432/agent_db')
+    rows = await conn.fetch(\"SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY tablename\")
+    for r in rows: print(' -', r['tablename'])
+    await conn.close()
+asyncio.run(main())
+"
+PowerShell smoke-test полного цикла
+powershell
+$login = Invoke-RestMethod -Uri "http://localhost:8000/auth/login" `
+  -Method Post -ContentType "application/json" `
+  -Body (@{ email="test@example.com"; password="supersecret" } | ConvertTo-Json)
+$headers = @{ Authorization = "Bearer $($login.access_token)" }
+
+$run = Invoke-RestMethod -Uri "http://localhost:8000/agent/run" `
+  -Method Post -Headers $headers -ContentType "application/json" `
+  -Body (@{ message="Посчитай (123 + 456) * 7" } | ConvertTo-Json)
+$run | ConvertTo-Json -Depth 10   # status=interrupted, pending_approval_id=<uuid>, run_id=<uuid>
+
+$result = Invoke-RestMethod -Uri "http://localhost:8000/approvals/$($run.pending_approval_id)/decide" `
+  -Method Post -Headers $headers -ContentType "application/json" `
+  -Body (@{ approved=$true; comment="ok" } | ConvertTo-Json)
+$result | ConvertTo-Json -Depth 10   # status=completed, финальное ai "4053"
+
+Invoke-RestMethod -Uri "http://localhost:8000/runs" -Headers $headers | ConvertTo-Json -Depth 10
+Invoke-RestMethod -Uri "http://localhost:8000/runs/$($run.run_id)/events" -Headers $headers | ConvertTo-Json -Depth 10
+
+# SSE
+'{"message":"Посчитай 10 + 20"}' | Out-File -Encoding utf8 body.json
+curl.exe -N -X POST http://localhost:8000/agent/stream `
+  -H "Content-Type: application/json" `
+  -H "Authorization: Bearer $($login.access_token)" `
+  --data-binary "@body.json"
+Env
+text
+APP_NAME=agent-backend
+APP_ENV=dev
+DEBUG=true
+DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/agent_db
+JWT_SECRET_KEY=change-me-in-prod
+JWT_ALGORITHM=HS256
+ACCESS_TOKEN_EXPIRE_MINUTES=30
+REFRESH_TOKEN_EXPIRE_DAYS=7
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=qwen3:4b-instruct
+OLLAMA_TEMPERATURE=0.3
+OLLAMA_TOP_P=0.9
+Что сказать новому ИИ
+«Это handoff для LangGraph-агент-бэкенда. Всё работает: auth, HITL, runs, events, SSE. Схема БД зафиксирована Alembic. Следующий спринт — тесты (pytest + httpx + testcontainers/отдельная БД + mock LLM). Начни с tests/conftest.py и setup-а тестовой БД. Полная структура и контекст — в этом документе.»
+
