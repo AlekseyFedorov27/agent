@@ -76,3 +76,5 @@ async def add_event(
     await session.commit()
     await session.refresh(event)
     return event
+
+

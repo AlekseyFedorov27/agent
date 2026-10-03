@@ -1,0 +1,2644 @@
+===== FILE: .env.example =====
+# App
+APP_NAME=agent-backend
+APP_ENV=dev
+DEBUG=true
+
+# Database
+DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/agent_db
+
+# JWT (замени на свои значения!)
+JWT_SECRET_KEY=change-me-in-prod
+JWT_ALGORITHM=HS256
+ACCESS_TOKEN_EXPIRE_MINUTES=30
+REFRESH_TOKEN_EXPIRE_DAYS=7
+
+===== FILE: .gitignore =====
+__pycache__/
+*.db-wal
+*.db-shm
+.pytest_cache
+.tests
+/tests
+
+===== FILE: alembic/env.py =====
+import asyncio
+from logging.config import fileConfig
+
+from alembic import context
+from sqlalchemy import pool
+from sqlalchemy.engine import Connection
+from sqlalchemy.ext.asyncio import async_engine_from_config
+
+from app.config import get_settings
+from app.core.database import Base
+
+# noqa: F401 — импорты нужны, чтобы модели зарегистрировались в Base.metadata
+from app.auth import models as _auth_models  # noqa: F401
+from app.hitl import models as _hitl_models  # noqa: F401
+from app.runs import models as _runs_models  # noqa: F401
+
+# Alembic Config object
+config = context.config
+
+# Логирование
+if config.config_file_name is not None:
+    fileConfig(config.config_file_name)
+
+# Подменяем URL из наших настроек
+settings = get_settings()
+config.set_main_option("sqlalchemy.url", settings.database_url)
+
+# Metadata для autogenerate
+target_metadata = Base.metadata
+
+
+# --------------------------------------------------------------------------- #
+# Таблицы, которыми управляет LangGraph. Мы их не трогаем в миграциях.
+# AsyncPostgresSaver.setup() создаёт их сам.
+# --------------------------------------------------------------------------- #
+LANGGRAPH_TABLES = {
+    "checkpoints",
+    "checkpoint_blobs",
+    "checkpoint_writes",
+    "checkpoint_migrations",
+}
+
+
+def include_object(obj, name, type_, reflected, compare_to):
+    """Исключает таблицы LangGraph из autogenerate."""
+    if type_ == "table" and name in LANGGRAPH_TABLES:
+        return False
+    return True
+
+
+# --------------------------------------------------------------------------- #
+# Offline-режим (генерация SQL без подключения к БД)
+# --------------------------------------------------------------------------- #
+
+def run_migrations_offline() -> None:
+    url = config.get_main_option("sqlalchemy.url")
+    context.configure(
+        url=url,
+        target_metadata=target_metadata,
+        literal_binds=True,
+        dialect_opts={"paramstyle": "named"},
+        include_object=include_object,
+        compare_type=True,
+        compare_server_default=True,
+    )
+    with context.begin_transaction():
+        context.run_migrations()
+
+
+# --------------------------------------------------------------------------- #
+# Online-режим (подключение к БД, async)
+# --------------------------------------------------------------------------- #
+
+def do_run_migrations(connection: Connection) -> None:
+    context.configure(
+        connection=connection,
+        target_metadata=target_metadata,
+        include_object=include_object,
+        compare_type=True,
+        compare_server_default=True,
+    )
+    with context.begin_transaction():
+        context.run_migrations()
+
+
+async def run_async_migrations() -> None:
+    connectable = async_engine_from_config(
+        config.get_section(config.config_ini_section, {}),
+        prefix="sqlalchemy.",
+        poolclass=pool.NullPool,
+    )
+    async with connectable.connect() as connection:
+        await connection.run_sync(do_run_migrations)
+    await connectable.dispose()
+
+
+def run_migrations_online() -> None:
+    asyncio.run(run_async_migrations())
+
+
+if context.is_offline_mode():
+    run_migrations_offline()
+else:
+    run_migrations_online()
+
+===== FILE: alembic/README =====
+Generic single-database configuration with an async dbapi.
+
+===== FILE: alembic/script.py.mako =====
+"""${message}
+
+Revision ID: ${up_revision}
+Revises: ${down_revision | comma,n}
+Create Date: ${create_date}
+
+"""
+from typing import Sequence, Union
+
+from alembic import op
+import sqlalchemy as sa
+${imports if imports else ""}
+
+# revision identifiers, used by Alembic.
+revision: str = ${repr(up_revision)}
+down_revision: Union[str, Sequence[str], None] = ${repr(down_revision)}
+branch_labels: Union[str, Sequence[str], None] = ${repr(branch_labels)}
+depends_on: Union[str, Sequence[str], None] = ${repr(depends_on)}
+
+
+def upgrade() -> None:
+    """Upgrade schema."""
+    ${upgrades if upgrades else "pass"}
+
+
+def downgrade() -> None:
+    """Downgrade schema."""
+    ${downgrades if downgrades else "pass"}
+
+===== FILE: alembic/versions/353cc3db8f30_initial_schema_users_approvals.py =====
+"""initial schema: users + approvals
+
+Revision ID: 353cc3db8f30
+Revises: 
+Create Date: 2026-10-02 12:49:33.304107
+
+"""
+from typing import Sequence, Union
+
+from alembic import op
+import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
+
+# revision identifiers, used by Alembic.
+revision: str = '353cc3db8f30'
+down_revision: Union[str, Sequence[str], None] = None
+branch_labels: Union[str, Sequence[str], None] = None
+depends_on: Union[str, Sequence[str], None] = None
+
+
+def upgrade() -> None:
+    """Upgrade schema."""
+    # ### commands auto generated by Alembic - please adjust! ###
+    op.create_table('users',
+    sa.Column('id', sa.UUID(), nullable=False),
+    sa.Column('email', sa.String(length=320), nullable=False),
+    sa.Column('hashed_password', sa.String(length=255), nullable=False),
+    sa.Column('is_active', sa.Boolean(), nullable=False),
+    sa.Column('is_superuser', sa.Boolean(), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.PrimaryKeyConstraint('id')
+    )
+    op.create_index(op.f('ix_users_email'), 'users', ['email'], unique=True)
+    op.create_table('approvals',
+    sa.Column('id', sa.UUID(), nullable=False),
+    sa.Column('user_id', sa.UUID(), nullable=False),
+    sa.Column('thread_id', sa.String(length=128), nullable=False),
+    sa.Column('interrupt_id', sa.String(length=128), nullable=True),
+    sa.Column('status', sa.String(length=16), nullable=False),
+    sa.Column('payload', postgresql.JSONB(astext_type=sa.Text()), nullable=False),
+    sa.Column('comment', sa.Text(), nullable=True),
+    sa.Column('decided_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.ForeignKeyConstraint(['user_id'], ['users.id'], ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('id')
+    )
+    op.create_index(op.f('ix_approvals_status'), 'approvals', ['status'], unique=False)
+    op.create_index(op.f('ix_approvals_thread_id'), 'approvals', ['thread_id'], unique=False)
+    op.create_index(op.f('ix_approvals_user_id'), 'approvals', ['user_id'], unique=False)
+    # ### end Alembic commands ###
+
+
+def downgrade() -> None:
+    """Downgrade schema."""
+    # ### commands auto generated by Alembic - please adjust! ###
+    op.drop_index(op.f('ix_approvals_user_id'), table_name='approvals')
+    op.drop_index(op.f('ix_approvals_thread_id'), table_name='approvals')
+    op.drop_index(op.f('ix_approvals_status'), table_name='approvals')
+    op.drop_table('approvals')
+    op.drop_index(op.f('ix_users_email'), table_name='users')
+    op.drop_table('users')
+    # ### end Alembic commands ###
+
+===== FILE: alembic/versions/af6ed682704d_add_runs_and_events_link_approvals_to_.py =====
+"""add runs and events, link approvals to runs
+
+Revision ID: af6ed682704d
+Revises: 353cc3db8f30
+Create Date: 2026-10-03 11:58:22.247289
+
+"""
+from typing import Sequence, Union
+
+from alembic import op
+import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
+
+# revision identifiers, used by Alembic.
+revision: str = 'af6ed682704d'
+down_revision: Union[str, Sequence[str], None] = '353cc3db8f30'
+branch_labels: Union[str, Sequence[str], None] = None
+depends_on: Union[str, Sequence[str], None] = None
+
+
+def upgrade() -> None:
+    """Upgrade schema."""
+    # ### commands auto generated by Alembic - please adjust! ###
+    op.create_table('runs',
+    sa.Column('id', sa.UUID(), nullable=False),
+    sa.Column('user_id', sa.UUID(), nullable=False),
+    sa.Column('thread_id', sa.String(length=128), nullable=False),
+    sa.Column('status', sa.String(length=16), nullable=False),
+    sa.Column('input', postgresql.JSONB(astext_type=sa.Text()), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('completed_at', sa.DateTime(timezone=True), nullable=True),
+    sa.ForeignKeyConstraint(['user_id'], ['users.id'], ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('id')
+    )
+    op.create_index(op.f('ix_runs_status'), 'runs', ['status'], unique=False)
+    op.create_index(op.f('ix_runs_thread_id'), 'runs', ['thread_id'], unique=False)
+    op.create_index(op.f('ix_runs_user_id'), 'runs', ['user_id'], unique=False)
+    op.create_table('events',
+    sa.Column('id', sa.UUID(), nullable=False),
+    sa.Column('run_id', sa.UUID(), nullable=False),
+    sa.Column('type', sa.String(length=32), nullable=False),
+    sa.Column('payload', postgresql.JSONB(astext_type=sa.Text()), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.ForeignKeyConstraint(['run_id'], ['runs.id'], ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('id')
+    )
+    op.create_index(op.f('ix_events_created_at'), 'events', ['created_at'], unique=False)
+    op.create_index(op.f('ix_events_run_id'), 'events', ['run_id'], unique=False)
+    op.create_index(op.f('ix_events_type'), 'events', ['type'], unique=False)
+    op.add_column('approvals', sa.Column('run_id', sa.UUID(), nullable=True))
+    op.create_index(op.f('ix_approvals_run_id'), 'approvals', ['run_id'], unique=False)
+    op.create_foreign_key(None, 'approvals', 'runs', ['run_id'], ['id'], ondelete='SET NULL')
+    # ### end Alembic commands ###
+
+
+def downgrade() -> None:
+    """Downgrade schema."""
+    # ### commands auto generated by Alembic - please adjust! ###
+    # WARNING: constraint name is None; this directive will fail as
+    # rendered.  Add a name, or use a naming convention; see
+    # https://alembic.sqlalchemy.org/en/latest/naming.html
+    op.drop_constraint(None, 'approvals', type_='foreignkey')
+    op.drop_index(op.f('ix_approvals_run_id'), table_name='approvals')
+    op.drop_column('approvals', 'run_id')
+    op.drop_index(op.f('ix_events_type'), table_name='events')
+    op.drop_index(op.f('ix_events_run_id'), table_name='events')
+    op.drop_index(op.f('ix_events_created_at'), table_name='events')
+    op.drop_table('events')
+    op.drop_index(op.f('ix_runs_user_id'), table_name='runs')
+    op.drop_index(op.f('ix_runs_thread_id'), table_name='runs')
+    op.drop_index(op.f('ix_runs_status'), table_name='runs')
+    op.drop_table('runs')
+    # ### end Alembic commands ###
+
+===== FILE: alembic.ini =====
+# A generic, single database configuration.
+
+[alembic]
+# path to migration scripts.
+# this is typically a path given in POSIX (e.g. forward slashes)
+# format, relative to the token %(here)s which refers to the location of this
+# ini file
+script_location = %(here)s/alembic
+
+# template used to generate migration file names; The default value is %%(rev)s_%%(slug)s
+# Uncomment the line below if you want the files to be prepended with date and time
+# see https://alembic.sqlalchemy.org/en/latest/tutorial.html#editing-the-ini-file
+# for all available tokens
+# file_template = %%(year)d_%%(month).2d_%%(day).2d_%%(hour).2d%%(minute).2d-%%(rev)s_%%(slug)s
+# Or organize into date-based subdirectories (requires recursive_version_locations = true)
+# file_template = %%(year)d/%%(month).2d/%%(day).2d_%%(hour).2d%%(minute).2d_%%(second).2d_%%(rev)s_%%(slug)s
+
+# sys.path path, will be prepended to sys.path if present.
+# defaults to the current working directory.  for multiple paths, the path separator
+# is defined by "path_separator" below.
+prepend_sys_path = .
+
+# timezone to use when rendering the date within the migration file
+# as well as the filename.
+# If specified, requires the tzdata library which can be installed by adding
+# `alembic[tz]` to the pip requirements.
+# string value is passed to ZoneInfo()
+# leave blank for localtime
+# timezone =
+
+# max length of characters to apply to the "slug" field
+# truncate_slug_length = 40
+
+# set to 'true' to run the environment during
+# the 'revision' command, regardless of autogenerate
+# revision_environment = false
+
+# set to 'true' to allow .pyc and .pyo files without
+# a source .py file to be detected as revisions in the
+# versions/ directory
+# sourceless = false
+
+# version location specification; This defaults
+# to <script_location>/versions.  When using multiple version
+# directories, initial revisions must be specified with --version-path.
+# The path separator used here should be the separator specified by "path_separator"
+# below.
+# version_locations = %(here)s/bar:%(here)s/bat:%(here)s/alembic/versions
+
+# path_separator; This indicates what character is used to split lists of file
+# paths, including version_locations and prepend_sys_path within configparser
+# files such as alembic.ini.
+# The default rendered in new alembic.ini files is "os", which uses os.pathsep
+# to provide os-dependent path splitting.
+#
+# Note that in order to support legacy alembic.ini files, this default does NOT
+# take place if path_separator is not present in alembic.ini.  If this
+# option is omitted entirely, fallback logic is as follows:
+#
+# 1. Parsing of the version_locations option falls back to using the legacy
+#    "version_path_separator" key, which if absent then falls back to the legacy
+#    behavior of splitting on spaces and/or commas.
+# 2. Parsing of the prepend_sys_path option falls back to the legacy
+#    behavior of splitting on spaces, commas, or colons.
+#
+# Valid values for path_separator are:
+#
+# path_separator = :
+# path_separator = ;
+# path_separator = space
+# path_separator = newline
+#
+# Use os.pathsep. Default configuration used for new projects.
+path_separator = os
+
+
+# set to 'true' to search source files recursively
+# in each "version_locations" directory
+# new in Alembic version 1.10
+# recursive_version_locations = false
+
+# the output encoding used when revision files
+# are written from script.py.mako
+# output_encoding = utf-8
+
+# database URL.  This is consumed by the user-maintained env.py script only.
+# other means of configuring database URLs may be customized within the env.py
+# file.
+sqlalchemy.url =
+
+
+[post_write_hooks]
+# post_write_hooks defines scripts or Python functions that are run
+# on newly generated revision scripts.  See the documentation for further
+# detail and examples
+
+# format using "black" - use the console_scripts runner, against the "black" entrypoint
+# hooks = black
+# black.type = console_scripts
+# black.entrypoint = black
+# black.options = -l 79 REVISION_SCRIPT_FILENAME
+
+# lint with attempts to fix using "ruff" - use the module runner, against the "ruff" module
+# hooks = ruff
+# ruff.type = module
+# ruff.module = ruff
+# ruff.options = check --fix REVISION_SCRIPT_FILENAME
+
+# Alternatively, use the exec runner to execute a binary found on your PATH
+# hooks = ruff
+# ruff.type = exec
+# ruff.executable = ruff
+# ruff.options = check --fix REVISION_SCRIPT_FILENAME
+
+# Logging configuration.  This is also consumed by the user-maintained
+# env.py script only.
+[loggers]
+keys = root,sqlalchemy,alembic
+
+[handlers]
+keys = console
+
+[formatters]
+keys = generic
+
+[logger_root]
+level = WARNING
+handlers = console
+qualname =
+
+[logger_sqlalchemy]
+level = WARNING
+handlers =
+qualname = sqlalchemy.engine
+
+[logger_alembic]
+level = INFO
+handlers =
+qualname = alembic
+
+[handler_console]
+class = StreamHandler
+args = (sys.stderr,)
+level = NOTSET
+formatter = generic
+
+[formatter_generic]
+format = %(levelname)-5.5s [%(name)s] %(message)s
+datefmt = %H:%M:%S
+
+===== FILE: app/__init__.py =====
+
+
+===== FILE: app/agent/__init__.py =====
+
+
+===== FILE: app/agent/checkpointer.py =====
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+
+from app.config import get_settings
+
+_saver: AsyncPostgresSaver | None = None
+_ctx_manager = None
+
+
+def _to_psycopg_url(asyncpg_url: str) -> str:
+    """asyncpg-URL → обычный psycopg-URL."""
+    return asyncpg_url.replace("postgresql+asyncpg://", "postgresql://", 1)
+
+
+async def init_checkpointer() -> AsyncPostgresSaver:
+    """Создаёт saver и таблицы. Вызывается один раз в lifespan."""
+    global _saver, _ctx_manager
+    if _saver is not None:
+        return _saver
+
+    settings = get_settings()
+    conn_string = _to_psycopg_url(settings.database_url)
+
+    _ctx_manager = AsyncPostgresSaver.from_conn_string(conn_string)
+    _saver = await _ctx_manager.__aenter__()
+    await _saver.setup()  # создаёт таблицы checkpoints, checkpoint_blobs, ...
+    return _saver
+
+
+async def close_checkpointer() -> None:
+    global _saver, _ctx_manager
+    if _ctx_manager is not None:
+        await _ctx_manager.__aexit__(None, None, None)
+    _saver = None
+    _ctx_manager = None
+
+
+def get_checkpointer() -> AsyncPostgresSaver:
+    if _saver is None:
+        raise RuntimeError("Checkpointer is not initialized")
+    return _saver
+
+===== FILE: app/agent/dependencies.py =====
+from fastapi import Request
+
+from app.agent.runtime import AgentRuntimeService
+
+
+def get_runtime(request: Request) -> AgentRuntimeService:
+    return request.app.state.runtime
+
+===== FILE: app/agent/graph.py =====
+from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.graph import END, START, StateGraph
+
+from app.agent.nodes import (
+    approval_node,
+    llm_node,
+    route_after_approval,
+    route_after_llm,
+    tool_node,
+)
+from app.agent.state import AgentState
+
+
+def build_graph(checkpointer: BaseCheckpointSaver):
+    builder = StateGraph(AgentState)
+
+    builder.add_node("llm", llm_node)
+    builder.add_node("approval", approval_node)
+    builder.add_node("tools", tool_node)
+
+    builder.add_edge(START, "llm")
+    builder.add_conditional_edges(
+        "llm",
+        route_after_llm,
+        {"approval": "approval", "end": END},
+    )
+    builder.add_conditional_edges(
+        "approval",
+        route_after_approval,
+        {"tools": "tools", "llm": "llm"},
+    )
+    builder.add_edge("tools", "llm")
+
+    return builder.compile(checkpointer=checkpointer)
+
+===== FILE: app/agent/llm.py =====
+from functools import lru_cache
+
+from langchain_ollama import ChatOllama
+
+from app.config import get_settings
+
+
+@lru_cache(maxsize=1)
+def get_llm() -> ChatOllama:
+    settings = get_settings()
+    return ChatOllama(
+        model=settings.ollama_model,
+        temperature=settings.ollama_temperature,
+        top_p=settings.ollama_top_p,
+        base_url=settings.ollama_base_url,
+    )
+
+===== FILE: app/agent/nodes.py =====
+from langchain_core.messages import SystemMessage, ToolMessage
+from langgraph.prebuilt import ToolNode
+from langgraph.types import interrupt
+
+from app.agent.llm import get_llm
+from app.agent.state import AgentState
+from app.agent.tools import calculator
+
+SYSTEM_PROMPT = (
+    "Ты — ассистент, который умеет считать. "
+    "Для любых арифметических выражений обязательно используй инструмент "
+    "`calculator`. Не считай в уме. Отвечай кратко и по делу на русском."
+)
+
+TOOLS = [calculator]
+tool_node = ToolNode(TOOLS)
+
+
+def llm_node(state: AgentState) -> dict:
+    llm = get_llm().bind_tools(TOOLS)
+    messages = state["messages"]
+
+    if not messages or not isinstance(messages[0], SystemMessage):
+        messages = [SystemMessage(content=SYSTEM_PROMPT), *messages]
+
+    response = llm.invoke(messages)
+    return {"messages": [response]}
+
+
+def route_after_llm(state: AgentState) -> str:
+    """Если LLM запросил tool_call → идём на approval, иначе — в END."""
+    last = state["messages"][-1]
+    if getattr(last, "tool_calls", None):
+        return "approval"
+    return "end"
+
+
+def approval_node(state: AgentState) -> dict:
+    """
+    Точка Human-in-the-Loop.
+    При первом заходе вызывает interrupt() и граф останавливается.
+    При resume — interrupt() вернёт значение из Command(resume=...).
+    """
+    last = state["messages"][-1]
+    tool_calls = getattr(last, "tool_calls", None) or []
+
+    decision = interrupt(
+        {
+            "type": "tool_approval",
+            "tool_calls": [
+                {"id": tc["id"], "name": tc["name"], "args": tc["args"]}
+                for tc in tool_calls
+            ],
+        }
+    )
+
+    approved = (
+        bool(decision.get("approved"))
+        if isinstance(decision, dict)
+        else bool(decision)
+    )
+
+    if approved:
+        return {"approval_decision": "approved"}
+
+    # Отказ: генерируем ToolMessage-заглушки, чтобы LLM знал,
+    # что инструмент не был вызван.
+    denial_messages = [
+        ToolMessage(
+            content="Пользователь отклонил вызов инструмента.",
+            tool_call_id=tc["id"],
+        )
+        for tc in tool_calls
+    ]
+    return {"messages": denial_messages, "approval_decision": "rejected"}
+
+
+def route_after_approval(state: AgentState) -> str:
+    if state.get("approval_decision") == "approved":
+        return "tools"
+    return "llm"
+
+===== FILE: app/agent/router.py =====
+import json
+import uuid
+from typing import Annotated
+
+from fastapi import APIRouter, Depends
+from fastapi.responses import StreamingResponse
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.agent.dependencies import get_runtime
+from app.agent.runtime import (
+    AgentRuntimeService,
+    _message_to_dict,
+    _serialize_messages,
+)
+from app.agent.schemas import RunRequest, RunResponse, ThreadStatusResponse
+from app.auth.dependencies import CurrentUser
+from app.core.database import get_db, get_session_factory
+from app.hitl import service as hitl_service
+from app.runs import service as runs_service
+from app.runs.models import EventType, RunStatus
+
+router = APIRouter(prefix="/agent", tags=["agent"])
+
+DbSession = Annotated[AsyncSession, Depends(get_db)]
+Runtime = Annotated[AgentRuntimeService, Depends(get_runtime)]
+
+
+def _sse(event: str, data: dict) -> str:
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+# --------------------------------------------------------------------------- #
+# Sync run
+# --------------------------------------------------------------------------- #
+
+@router.post("/run", response_model=RunResponse)
+async def run_agent(
+    data: RunRequest,
+    user: CurrentUser,
+    session: DbSession,
+    runtime: Runtime,
+) -> RunResponse:
+    thread_id = data.thread_id or str(uuid.uuid4())
+
+    run = await runs_service.create_run(
+        session,
+        user_id=user.id,
+        thread_id=thread_id,
+        input_payload={"message": data.message},
+    )
+
+    result = await runtime.start_run(thread_id, data.message)
+    state = await runtime.get_state(thread_id)
+    next_nodes = list(state.next) if state.next else []
+    messages = result.get("messages", [])
+
+    pending_id: uuid.UUID | None = None
+    if next_nodes:
+        await runs_service.update_status(session, run, RunStatus.INTERRUPTED)
+        await runs_service.add_event(
+            session, run_id=run.id, type=EventType.INTERRUPT,
+            payload={"next": next_nodes},
+        )
+        pending_id = await hitl_service.sync_pending_interrupts(
+            session, runtime,
+            thread_id=thread_id, user_id=user.id, run_id=run.id,
+        )
+    else:
+        await runs_service.update_status(session, run, RunStatus.COMPLETED)
+        await runs_service.add_event(
+            session, run_id=run.id, type=EventType.END,
+            payload={"messages": [_message_to_dict(m) for m in messages]},
+        )
+
+    return RunResponse(
+        run_id=run.id,
+        thread_id=thread_id,
+        status="interrupted" if next_nodes else "completed",
+        messages=_serialize_messages(messages),
+        pending_approval_id=pending_id,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Streaming run (SSE)
+# --------------------------------------------------------------------------- #
+
+@router.post("/stream")
+async def stream_agent(
+    data: RunRequest,
+    user: CurrentUser,
+    runtime: Runtime,
+) -> StreamingResponse:
+    thread_id = data.thread_id or str(uuid.uuid4())
+    user_id = user.id
+    message = data.message
+
+    async def event_generator():
+        # Отдельная сессия: request-scoped закроется до окончания стрима.
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            run = await runs_service.create_run(
+                session,
+                user_id=user_id,
+                thread_id=thread_id,
+                input_payload={"message": message},
+            )
+
+            yield _sse("run_started", {
+                "run_id": str(run.id),
+                "thread_id": thread_id,
+            })
+
+            async def on_event(event_type: str, payload: dict) -> None:
+                await runs_service.add_event(
+                    session, run_id=run.id, type=event_type, payload=payload
+                )
+
+            try:
+                await runtime.stream_run(thread_id, message, on_event=on_event)
+                state = await runtime.get_state(thread_id)
+                next_nodes = list(state.next) if state.next else []
+
+                if next_nodes:
+                    await runs_service.update_status(session, run, RunStatus.INTERRUPTED)
+
+                    pending_id: uuid.UUID | None = None
+                    for intr in runtime.get_pending_interrupts(state):
+                        await runs_service.add_event(
+                            session, run_id=run.id, type=EventType.INTERRUPT,
+                            payload={"interrupt": intr},
+                        )
+                        yield _sse("interrupt", intr)
+
+                    pending_id = await hitl_service.sync_pending_interrupts(
+                        session, runtime,
+                        thread_id=thread_id, user_id=user_id, run_id=run.id,
+                    )
+                    yield _sse("interrupted", {
+                        "thread_id": thread_id,
+                        "pending_approval_id": str(pending_id) if pending_id else None,
+                    })
+                else:
+                    await runs_service.update_status(session, run, RunStatus.COMPLETED)
+                    messages = state.values.get("messages", []) if state.values else []
+                    await runs_service.add_event(
+                        session, run_id=run.id, type=EventType.END,
+                        payload={"messages": [_message_to_dict(m) for m in messages]},
+                    )
+                    yield _sse("completed", {
+                        "thread_id": thread_id,
+                        "messages": [_message_to_dict(m) for m in messages],
+                    })
+            except Exception as e:
+                await runs_service.update_status(session, run, RunStatus.FAILED)
+                await runs_service.add_event(
+                    session, run_id=run.id, type=EventType.ERROR,
+                    payload={"error": str(e), "type": type(e).__name__},
+                )
+                yield _sse("error", {"detail": str(e), "type": type(e).__name__})
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",  # для nginx
+        },
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Status
+# --------------------------------------------------------------------------- #
+
+@router.get("/status/{thread_id}", response_model=ThreadStatusResponse)
+async def get_thread_status(
+    thread_id: str,
+    user: CurrentUser,
+    runtime: Runtime,
+) -> ThreadStatusResponse:
+    state = await runtime.get_state(thread_id)
+    messages = state.values.get("messages", []) if state.values else []
+    return ThreadStatusResponse(
+        thread_id=thread_id,
+        next_nodes=list(state.next) if state.next else [],
+        messages=_serialize_messages(messages),
+    )
+
+===== FILE: app/agent/runtime.py =====
+from typing import Any, Awaitable, Callable
+
+from langchain_core.messages import HumanMessage
+from langgraph.graph.state import CompiledStateGraph
+from langgraph.types import Command
+
+from app.agent.schemas import MessageOut
+from app.runs.models import EventType
+
+
+# --------------------------------------------------------------------------- #
+# Сериализация сообщений
+# --------------------------------------------------------------------------- #
+
+def _content_to_str(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(
+            str(b.get("text", b)) if isinstance(b, dict) else str(b) for b in content
+        )
+    return str(content)
+
+
+def _message_to_dict(m: Any) -> dict:
+    return {
+        "type": getattr(m, "type", m.__class__.__name__.lower()),
+        "content": _content_to_str(getattr(m, "content", "")),
+        "tool_calls": getattr(m, "tool_calls", None) or None,
+    }
+
+
+def _serialize_messages(messages: list) -> list[MessageOut]:
+    return [MessageOut(**_message_to_dict(m)) for m in messages]
+
+
+# --------------------------------------------------------------------------- #
+# Runtime
+# --------------------------------------------------------------------------- #
+
+EventHandler = Callable[[str, dict], Awaitable[None]]
+
+
+class AgentRuntimeService:
+    def __init__(self, graph: CompiledStateGraph):
+        self.graph = graph
+
+    def _config(self, thread_id: str) -> dict:
+        return {"configurable": {"thread_id": thread_id}}
+
+    # --- Базовые операции -------------------------------------------------- #
+
+    async def start_run(self, thread_id: str, message: str) -> dict:
+        return await self.graph.ainvoke(
+            {"messages": [HumanMessage(content=message)]},
+            config=self._config(thread_id),
+        )
+
+    async def resume_run(self, thread_id: str, resume_value: dict) -> dict:
+        return await self.graph.ainvoke(
+            Command(resume=resume_value),
+            config=self._config(thread_id),
+        )
+
+    async def get_state(self, thread_id: str):
+        return await self.graph.aget_state(self._config(thread_id))
+
+    @staticmethod
+    def get_pending_interrupts(state) -> list[dict]:
+        result: list[dict] = []
+        for task in (getattr(state, "tasks", None) or []):
+            for intr in (getattr(task, "interrupts", None) or []):
+                result.append(
+                    {
+                        "id": getattr(intr, "id", None),
+                        "value": getattr(intr, "value", None),
+                    }
+                )
+        return result
+
+    # --- Streaming --------------------------------------------------------- #
+
+    async def stream_run(
+        self,
+        thread_id: str,
+        message: str,
+        *,
+        on_event: EventHandler,
+    ) -> dict:
+        """
+        Запускает граф со стримингом.
+        on_event вызывается на каждый update от графа.
+        Возвращает финальный state.values.
+        """
+        async for chunk in self.graph.astream(
+            {"messages": [HumanMessage(content=message)]},
+            config=self._config(thread_id),
+            stream_mode="updates",
+        ):
+            # chunk = {node_name: node_output}
+            for node_name, node_output in chunk.items():
+                if not isinstance(node_output, dict):
+                    continue
+                messages = node_output.get("messages") or []
+                payload = {
+                    "node": node_name,
+                    "messages": [_message_to_dict(m) for m in messages],
+                }
+                if node_name == "llm":
+                    event_type = EventType.LLM_END
+                elif node_name == "tools":
+                    event_type = EventType.TOOL_END
+                else:
+                    event_type = EventType.NODE_UPDATE
+                await on_event(event_type, payload)
+
+        state = await self.get_state(thread_id)
+        return dict(state.values) if state.values else {}
+
+===== FILE: app/agent/schemas.py =====
+import uuid
+from typing import Any, Literal
+
+from pydantic import BaseModel, Field
+
+
+class RunRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=8000)
+    thread_id: str | None = None
+
+
+class MessageOut(BaseModel):
+    type: str
+    content: str
+    tool_calls: list[dict[str, Any]] | None = None
+
+
+class RunResponse(BaseModel):
+    run_id: uuid.UUID | None = None
+    thread_id: str
+    status: Literal["completed", "interrupted"]
+    messages: list[MessageOut]
+    pending_approval_id: uuid.UUID | None = None
+
+
+class ThreadStatusResponse(BaseModel):
+    thread_id: str
+    next_nodes: list[str]
+    messages: list[MessageOut]
+
+===== FILE: app/agent/state.py =====
+from typing import Annotated, TypedDict
+
+from langchain_core.messages import BaseMessage
+from langgraph.graph.message import add_messages
+
+
+class AgentState(TypedDict, total=False):
+    messages: Annotated[list[BaseMessage], add_messages]
+    approval_decision: str | None  # "approved" | "rejected"
+
+===== FILE: app/agent/tools.py =====
+import ast
+import operator
+from typing import Any
+
+from langchain_core.tools import tool
+
+_ALLOWED_BINOPS: dict[type, Any] = {
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+    ast.Div: operator.truediv,
+    ast.Pow: operator.pow,
+    ast.Mod: operator.mod,
+}
+
+_ALLOWED_UNARYOPS: dict[type, Any] = {
+    ast.USub: operator.neg,
+    ast.UAdd: operator.pos,
+}
+
+
+def _eval_node(node: ast.AST) -> float | int:
+    if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+        return node.value
+    if isinstance(node, ast.BinOp) and type(node.op) in _ALLOWED_BINOPS:
+        return _ALLOWED_BINOPS[type(node.op)](
+            _eval_node(node.left), _eval_node(node.right)
+        )
+    if isinstance(node, ast.UnaryOp) and type(node.op) in _ALLOWED_UNARYOPS:
+        return _ALLOWED_UNARYOPS[type(node.op)](_eval_node(node.operand))
+    raise ValueError(f"Unsupported expression: {ast.dump(node)}")
+
+
+@tool
+def calculator(expression: str) -> str:
+    """Вычислить простое арифметическое выражение.
+
+    Поддерживаются операции: +, -, *, /, **, %, скобки, унарные +/-.
+    Пример: "(2 + 3) * 4 ** 2".
+    """
+    try:
+        tree = ast.parse(expression, mode="eval")
+        result = _eval_node(tree.body)
+        return str(result)
+    except Exception as e:
+        return f"Error: {e}"
+
+===== FILE: app/auth/__init__.py =====
+
+
+===== FILE: app/auth/dependencies.py =====
+from typing import Annotated
+
+from fastapi import Depends
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from jose import JWTError
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.auth.models import User
+from app.auth.service import get_user_by_id
+from app.core.database import get_db
+from app.core.exceptions import ForbiddenError, UnauthorizedError
+from app.core.security import decode_token
+
+_bearer_scheme = HTTPBearer(auto_error=False)
+
+
+async def get_current_user(
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer_scheme)],
+    session: Annotated[AsyncSession, Depends(get_db)],
+) -> User:
+    if credentials is None:
+        raise UnauthorizedError("Missing authorization header")
+
+    try:
+        payload = decode_token(credentials.credentials, expected_type="access")
+    except JWTError as e:
+        raise UnauthorizedError("Invalid or expired token") from e
+
+    user_id_str = payload.get("sub")
+    if not user_id_str:
+        raise UnauthorizedError("Invalid token payload")
+
+    try:
+        import uuid
+        user_id = uuid.UUID(user_id_str)
+    except ValueError as e:
+        raise UnauthorizedError("Invalid user id in token") from e
+
+    user = await get_user_by_id(session, user_id)
+    if user is None:
+        raise UnauthorizedError("User not found")
+    if not user.is_active:
+        raise UnauthorizedError("User is inactive")
+    return user
+
+
+CurrentUser = Annotated[User, Depends(get_current_user)]
+
+
+async def require_superuser(user: CurrentUser) -> User:
+    if not user.is_superuser:
+        raise ForbiddenError("Superuser privileges required")
+    return user
+
+
+SuperUser = Annotated[User, Depends(require_superuser)]
+
+===== FILE: app/auth/models.py =====
+import uuid
+from datetime import datetime
+
+from sqlalchemy import Boolean, DateTime, String, func
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+from sqlalchemy.orm import Mapped, mapped_column
+
+from app.core.database import Base
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    email: Mapped[str] = mapped_column(
+        String(320),
+        unique=True,
+        index=True,
+        nullable=False,
+    )
+    hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    is_superuser: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    def __repr__(self) -> str:
+        return f"<User id={self.id} email={self.email}>"
+
+===== FILE: app/auth/router.py =====
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, status
+from jose import JWTError
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.auth.dependencies import CurrentUser
+from app.auth.schemas import (
+    RefreshRequest,
+    TokenPair,
+    UserCreate,
+    UserLogin,
+    UserPublic,
+)
+from app.auth.service import authenticate_user, register_user
+from app.core.database import get_db
+from app.core.exceptions import UnauthorizedError
+from app.core.security import (
+    create_access_token,
+    create_refresh_token,
+    decode_token,
+)
+
+router = APIRouter(prefix="/auth", tags=["auth"])
+
+
+def _issue_tokens(user_id: str) -> TokenPair:
+    sub = str(user_id)
+    return TokenPair(
+        access_token=create_access_token(sub),
+        refresh_token=create_refresh_token(sub),
+    )
+
+
+@router.post(
+    "/register",
+    response_model=UserPublic,
+    status_code=status.HTTP_201_CREATED,
+)
+async def register(
+    data: UserCreate,
+    session: Annotated[AsyncSession, Depends(get_db)],
+) -> UserPublic:
+    user = await register_user(session, data.email, data.password)
+    return UserPublic.model_validate(user)
+
+
+@router.post("/login", response_model=TokenPair)
+async def login(
+    data: UserLogin,
+    session: Annotated[AsyncSession, Depends(get_db)],
+) -> TokenPair:
+    user = await authenticate_user(session, data.email, data.password)
+    return _issue_tokens(user.id)
+
+
+@router.post("/refresh", response_model=TokenPair)
+async def refresh(data: RefreshRequest) -> TokenPair:
+    try:
+        payload = decode_token(data.refresh_token, expected_type="refresh")
+    except JWTError as e:
+        raise UnauthorizedError("Invalid or expired refresh token") from e
+    sub = payload.get("sub")
+    if not sub:
+        raise UnauthorizedError("Invalid refresh token payload")
+    return _issue_tokens(sub)
+
+
+@router.get("/me", response_model=UserPublic)
+async def me(user: CurrentUser) -> UserPublic:
+    return UserPublic.model_validate(user)
+
+===== FILE: app/auth/schemas.py =====
+import uuid
+from datetime import datetime
+
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
+
+
+class UserCreate(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=8, max_length=128)
+
+
+class UserLogin(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class UserPublic(BaseModel):
+    """Публичное представление пользователя — без хеша пароля."""
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    email: EmailStr
+    is_active: bool
+    is_superuser: bool
+    created_at: datetime
+
+
+class TokenPair(BaseModel):
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+
+
+class RefreshRequest(BaseModel):
+    refresh_token: str
+
+===== FILE: app/auth/service.py =====
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.auth.models import User
+from app.core.exceptions import ConflictError, UnauthorizedError
+from app.core.security import hash_password, verify_password
+
+
+async def get_user_by_email(session: AsyncSession, email: str) -> User | None:
+    result = await session.execute(select(User).where(User.email == email.lower()))
+    return result.scalar_one_or_none()
+
+
+async def get_user_by_id(session: AsyncSession, user_id) -> User | None:
+    return await session.get(User, user_id)
+
+
+async def register_user(session: AsyncSession, email: str, password: str) -> User:
+    email = email.lower()
+    existing = await get_user_by_email(session, email)
+    if existing is not None:
+        raise ConflictError("User with this email already exists")
+
+    user = User(
+        email=email,
+        hashed_password=hash_password(password),
+    )
+    session.add(user)
+    await session.commit()
+    await session.refresh(user)
+    return user
+
+
+async def authenticate_user(session: AsyncSession, email: str, password: str) -> User:
+    user = await get_user_by_email(session, email.lower())
+    if user is None or not verify_password(password, user.hashed_password):
+        # Одинаковое сообщение для обоих случаев — не подсказываем атакующему,
+        # существует ли пользователь.
+        raise UnauthorizedError("Invalid email or password")
+    if not user.is_active:
+        raise UnauthorizedError("User is inactive")
+    return user
+
+===== FILE: app/config.py =====
+from functools import lru_cache
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    app_name: str = "agent-backend"
+    app_env: str = "dev"
+    debug: bool = False
+
+    database_url: str
+
+    jwt_secret_key: str
+    jwt_algorithm: str = "HS256"
+    access_token_expire_minutes: int = 30
+    refresh_token_expire_days: int = 7
+
+    ollama_base_url: str = "http://localhost:11434"
+    ollama_model: str = "qwen3:4b-instruct"
+    ollama_temperature: float = 0.3
+    ollama_top_p: float = 0.9
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()
+
+===== FILE: app/core/__init__.py =====
+
+
+===== FILE: app/core/database.py =====
+from collections.abc import AsyncIterator
+
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
+from sqlalchemy.orm import DeclarativeBase
+
+from app.config import get_settings
+
+
+class Base(DeclarativeBase):
+    """Базовый класс для ORM-моделей."""
+
+
+_engine: AsyncEngine | None = None
+_session_factory: async_sessionmaker[AsyncSession] | None = None
+
+
+def get_engine() -> AsyncEngine:
+    global _engine
+    if _engine is None:
+        settings = get_settings()
+        _engine = create_async_engine(
+            settings.database_url,
+            echo=settings.debug,
+            pool_pre_ping=True,
+            pool_recycle=300,
+            pool_size=5,
+            max_overflow=10,
+            connect_args={
+                "prepared_statement_cache_size": 0,
+                "server_settings": {"application_name": "agent-backend"},
+            },
+        )
+    return _engine
+
+
+def get_session_factory() -> async_sessionmaker[AsyncSession]:
+    global _session_factory
+    if _session_factory is None:
+        _session_factory = async_sessionmaker(
+            bind=get_engine(),
+            expire_on_commit=False,
+        )
+    return _session_factory
+
+
+async def get_db() -> AsyncIterator[AsyncSession]:
+    factory = get_session_factory()
+    async with factory() as session:
+        try:
+            yield session
+        except Exception:
+            await session.rollback()
+            raise
+
+
+async def dispose_db() -> None:
+    if _engine is not None:
+        await _engine.dispose()
+
+===== FILE: app/core/exceptions.py =====
+from fastapi import HTTPException, status
+
+
+class AppError(HTTPException):
+    """Базовое исключение приложения."""
+
+
+class NotFoundError(AppError):
+    def __init__(self, detail: str = "Not found"):
+        super().__init__(status_code=status.HTTP_404_NOT_FOUND, detail=detail)
+
+
+class ConflictError(AppError):
+    def __init__(self, detail: str = "Conflict"):
+        super().__init__(status_code=status.HTTP_409_CONFLICT, detail=detail)
+
+
+class UnauthorizedError(AppError):
+    def __init__(self, detail: str = "Unauthorized"):
+        super().__init__(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=detail,
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+
+class ForbiddenError(AppError):
+    def __init__(self, detail: str = "Forbidden"):
+        super().__init__(status_code=status.HTTP_403_FORBIDDEN, detail=detail)
+
+===== FILE: app/core/security.py =====
+from datetime import datetime, timedelta, timezone
+from typing import Any, Literal
+
+import bcrypt
+from jose import JWTError, jwt
+
+from app.config import get_settings
+
+TokenType = Literal["access", "refresh"]
+
+
+# --------------------------------------------------------------------------- #
+# Пароли
+# --------------------------------------------------------------------------- #
+
+def hash_password(password: str) -> str:
+    salt = bcrypt.gensalt()
+    return bcrypt.hashpw(password.encode("utf-8"), salt).decode("utf-8")
+
+
+def verify_password(plain: str, hashed: str) -> bool:
+    try:
+        return bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
+    except ValueError:
+        return False
+
+
+# --------------------------------------------------------------------------- #
+# JWT
+# --------------------------------------------------------------------------- #
+
+def _create_token(subject: str, token_type: TokenType, expires_delta: timedelta) -> str:
+    settings = get_settings()
+    now = datetime.now(timezone.utc)
+    payload: dict[str, Any] = {
+        "sub": subject,
+        "type": token_type,
+        "iat": int(now.timestamp()),
+        "exp": int((now + expires_delta).timestamp()),
+    }
+    return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
+
+
+def create_access_token(subject: str) -> str:
+    settings = get_settings()
+    return _create_token(
+        subject=subject,
+        token_type="access",
+        expires_delta=timedelta(minutes=settings.access_token_expire_minutes),
+    )
+
+
+def create_refresh_token(subject: str) -> str:
+    settings = get_settings()
+    return _create_token(
+        subject=subject,
+        token_type="refresh",
+        expires_delta=timedelta(days=settings.refresh_token_expire_days),
+    )
+
+
+def decode_token(token: str, expected_type: TokenType | None = None) -> dict[str, Any]:
+    """
+    Декодирует токен и проверяет подпись/срок действия.
+    Бросает JWTError при любой проблеме.
+    """
+    settings = get_settings()
+    payload = jwt.decode(
+        token,
+        settings.jwt_secret_key,
+        algorithms=[settings.jwt_algorithm],
+    )
+    if expected_type is not None and payload.get("type") != expected_type:
+        raise JWTError(f"Expected token type '{expected_type}', got '{payload.get('type')}'")
+    return payload
+
+===== FILE: app/hitl/__init__.py =====
+
+
+===== FILE: app/hitl/models.py =====
+import uuid
+from datetime import datetime
+
+from sqlalchemy import DateTime, ForeignKey, String, Text, func
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+from sqlalchemy.orm import Mapped, mapped_column
+
+from app.core.database import Base
+
+
+class ApprovalStatus:
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+
+
+class Approval(Base):
+    __tablename__ = "approvals"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+    )
+    run_id: Mapped[uuid.UUID | None] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("runs.id", ondelete="SET NULL"),
+        index=True,
+        nullable=True,
+    )
+    thread_id: Mapped[str] = mapped_column(String(128), index=True, nullable=False)
+    interrupt_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(16), default=ApprovalStatus.PENDING, index=True, nullable=False
+    )
+    payload: Mapped[dict[str,str]] = mapped_column(JSONB, nullable=False, default=dict)
+    comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    decided_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+===== FILE: app/hitl/router.py =====
+import uuid
+from typing import Annotated
+
+from fastapi import APIRouter, Depends
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.agent.dependencies import get_runtime
+from app.agent.runtime import AgentRuntimeService, _serialize_messages
+from app.agent.schemas import RunResponse
+from app.auth.dependencies import CurrentUser
+from app.core.database import get_db
+from app.core.exceptions import NotFoundError
+from app.hitl import service
+from app.hitl.schemas import ApprovalDecision, ApprovalOut
+from app.runs import service as runs_service
+from app.runs.models import EventType, RunStatus
+
+router = APIRouter(prefix="/approvals", tags=["hitl"])
+
+DbSession = Annotated[AsyncSession, Depends(get_db)]
+Runtime = Annotated[AgentRuntimeService, Depends(get_runtime)]
+
+
+@router.get("", response_model=list[ApprovalOut])
+async def list_pending_approvals(
+    user: CurrentUser, session: DbSession
+) -> list[ApprovalOut]:
+    approvals = await service.list_pending(session, user.id)
+    return [ApprovalOut.model_validate(a) for a in approvals]
+
+
+@router.get("/{approval_id}", response_model=ApprovalOut)
+async def get_approval(
+    approval_id: uuid.UUID, user: CurrentUser, session: DbSession
+) -> ApprovalOut:
+    approval = await service.get_approval(session, approval_id)
+    if approval is None or approval.user_id != user.id:
+        raise NotFoundError("Approval not found")
+    return ApprovalOut.model_validate(approval)
+
+
+@router.post("/{approval_id}/decide", response_model=RunResponse)
+async def decide_approval(
+    approval_id: uuid.UUID,
+    data: ApprovalDecision,
+    user: CurrentUser,
+    session: DbSession,
+    runtime: Runtime,
+) -> RunResponse:
+    approval = await service.get_approval(session, approval_id)
+    if approval is None or approval.user_id != user.id:
+        raise NotFoundError("Approval not found")
+
+    approval = await service.decide(
+        session, approval, approved=data.approved, comment=data.comment
+    )
+
+    result = await runtime.resume_run(
+        approval.thread_id,
+        {"approved": data.approved, "comment": data.comment},
+    )
+
+    state = await runtime.get_state(approval.thread_id)
+    next_nodes = list(state.next) if state.next else []
+    messages = result.get("messages", [])
+
+    # Синхронизируем связанный Run, если он есть
+    run_id = approval.run_id
+    if run_id is not None:
+        run = await runs_service.get_run(session, run_id)
+        if run is not None:
+            await runs_service.update_status(
+                session, run,
+                RunStatus.INTERRUPTED if next_nodes else RunStatus.COMPLETED,
+            )
+            await runs_service.add_event(
+                session, run_id=run_id, type=EventType.RESUME,
+                payload={
+                    "approved": data.approved,
+                    "comment": data.comment,
+                    "next": next_nodes,
+                },
+            )
+
+    pending_id: uuid.UUID | None = None
+    if next_nodes:
+        pending_id = await service.sync_pending_interrupts(
+            session, runtime,
+            thread_id=approval.thread_id, user_id=user.id, run_id=run_id,
+        )
+
+    return RunResponse(
+        run_id=run_id,
+        thread_id=approval.thread_id,
+        status="interrupted" if next_nodes else "completed",
+        messages=_serialize_messages(messages),
+        pending_approval_id=pending_id,
+    )
+
+===== FILE: app/hitl/schemas.py =====
+import uuid
+from datetime import datetime
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class ApprovalOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    thread_id: str
+    status: str
+    payload: dict[str, Any]
+    comment: str | None
+    created_at: datetime
+    decided_at: datetime | None
+
+
+class ApprovalDecision(BaseModel):
+    approved: bool
+    comment: str | None = Field(default=None, max_length=2000)
+
+===== FILE: app/hitl/service.py =====
+import uuid
+from datetime import datetime, timezone
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.exceptions import ConflictError
+from app.hitl.models import Approval, ApprovalStatus
+
+
+async def create_pending(
+    session: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    thread_id: str,
+    interrupt_id: str | None,
+    payload: dict,
+) -> Approval:
+    approval = Approval(
+        user_id=user_id,
+        thread_id=thread_id,
+        interrupt_id=interrupt_id,
+        status=ApprovalStatus.PENDING,
+        payload=payload,
+    )
+    session.add(approval)
+    await session.commit()
+    await session.refresh(approval)
+    return approval
+
+
+async def get_approval(
+    session: AsyncSession, approval_id: uuid.UUID
+) -> Approval | None:
+    return await session.get(Approval, approval_id)
+
+
+async def list_pending(
+    session: AsyncSession, user_id: uuid.UUID
+) -> list[Approval]:
+    stmt = (
+        select(Approval)
+        .where(
+            Approval.user_id == user_id,
+            Approval.status == ApprovalStatus.PENDING,
+        )
+        .order_by(Approval.created_at.desc())
+    )
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
+
+
+async def decide(
+    session: AsyncSession,
+    approval: Approval,
+    *,
+    approved: bool,
+    comment: str | None,
+) -> Approval:
+    if approval.status != ApprovalStatus.PENDING:
+        raise ConflictError("Approval already decided")
+
+    approval.status = (
+        ApprovalStatus.APPROVED if approved else ApprovalStatus.REJECTED
+    )
+    approval.comment = comment
+    approval.decided_at = datetime.now(timezone.utc)
+    await session.commit()
+    await session.refresh(approval)
+    return approval
+
+
+async def sync_pending_interrupts(
+    session: AsyncSession,
+    runtime,
+    *,
+    thread_id: str,
+    user_id: uuid.UUID,
+) -> uuid.UUID | None:
+    """
+    Проверяет state треда. Если есть активные interrupt'ы — создаёт
+    Approval для каждого. Возвращает id последнего созданного Approval.
+    """
+    state = await runtime.get_state(thread_id)
+    if not state.next:
+        return None
+
+    last_id: uuid.UUID | None = None
+    for intr in runtime.get_pending_interrupts(state):
+        approval = await create_pending(
+            session,
+            user_id=user_id,
+            thread_id=thread_id,
+            interrupt_id=intr.get("id"),
+            payload=intr.get("value") or {},
+        )
+        last_id = approval.id
+    return last_id
+
+
+async def create_pending(
+    session: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    thread_id: str,
+    interrupt_id: str | None,
+    payload: dict[str, str],
+    run_id: uuid.UUID | None = None,
+) -> Approval:
+    approval = Approval(
+        user_id=user_id,
+        thread_id=thread_id,
+        interrupt_id=interrupt_id,
+        status=ApprovalStatus.PENDING,
+        payload=payload,
+        run_id=run_id,
+    )
+    session.add(approval)
+    await session.commit()
+    await session.refresh(approval)
+    return approval
+
+
+async def sync_pending_interrupts(
+    session: AsyncSession,
+    runtime,
+    *,
+    thread_id: str,
+    user_id: uuid.UUID,
+    run_id: uuid.UUID | None = None,
+) -> uuid.UUID | None:
+    state = await runtime.get_state(thread_id)
+    if not state.next:
+        return None
+
+    last_id: uuid.UUID | None = None
+    for intr in runtime.get_pending_interrupts(state):
+        approval = await create_pending(
+            session,
+            user_id=user_id,
+            thread_id=thread_id,
+            interrupt_id=intr.get("id"),
+            payload=intr.get("value") or {},
+            run_id=run_id,
+        )
+        last_id = approval.id
+    return last_id
+
+===== FILE: app/main.py =====
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI
+
+from app.agent.checkpointer import close_checkpointer, init_checkpointer
+from app.agent.graph import build_graph
+from app.agent.router import router as agent_router
+from app.agent.runtime import AgentRuntimeService
+from app.auth.router import router as auth_router
+from app.config import get_settings
+from app.core.database import dispose_db
+from app.hitl.router import router as hitl_router
+from app.runs.router import router as runs_router
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    saver = await init_checkpointer()
+    app.state.runtime = AgentRuntimeService(build_graph(saver))
+    yield
+    await close_checkpointer()
+    await dispose_db()
+
+
+def create_app() -> FastAPI:
+    settings = get_settings()
+    app = FastAPI(
+        title=settings.app_name,
+        debug=settings.debug,
+        lifespan=lifespan,
+    )
+
+    @app.get("/health", tags=["system"])
+    async def health() -> dict[str, str]:
+        return {"status": "ok", "env": settings.app_env}
+
+    app.include_router(auth_router)
+    app.include_router(agent_router)
+    app.include_router(hitl_router)
+    app.include_router(runs_router)
+    return app
+
+
+app = create_app()
+
+===== FILE: app/runs/__init__.py =====
+
+
+===== FILE: app/runs/models.py =====
+import uuid
+from datetime import datetime
+
+from sqlalchemy import DateTime, ForeignKey, String, func
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.core.database import Base
+
+
+class RunStatus:
+    RUNNING = "running"
+    INTERRUPTED = "interrupted"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class EventType:
+    LLM_END = "llm_end"
+    TOOL_END = "tool_end"
+    INTERRUPT = "interrupt"
+    RESUME = "resume"
+    END = "end"
+    ERROR = "error"
+    NODE_UPDATE = "node_update"
+
+
+class Run(Base):
+    __tablename__ = "runs"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+    )
+    thread_id: Mapped[str] = mapped_column(String(128), index=True, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(16), default=RunStatus.RUNNING, index=True, nullable=False
+    )
+    input: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    events: Mapped[list["Event"]] = relationship(
+        back_populates="run",
+        cascade="all, delete-orphan",
+        order_by="Event.created_at",
+    )
+
+    def __repr__(self) -> str:
+        return f"<Run id={self.id} thread={self.thread_id} status={self.status}>"
+
+
+class Event(Base):
+    __tablename__ = "events"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("runs.id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+    )
+    type: Mapped[str] = mapped_column(String(32), index=True, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
+    )
+
+    run: Mapped[Run] = relationship(back_populates="events")
+
+    def __repr__(self) -> str:
+        return f"<Event id={self.id} run={self.run_id} type={self.type}>"
+
+===== FILE: app/runs/router.py =====
+import uuid
+from typing import Annotated
+
+from fastapi import APIRouter, Depends, Query
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.auth.dependencies import CurrentUser
+from app.core.database import get_db
+from app.core.exceptions import NotFoundError
+from app.runs import service
+from app.runs.schemas import EventOut, RunOut
+
+router = APIRouter(prefix="/runs", tags=["runs"])
+
+DbSession = Annotated[AsyncSession, Depends(get_db)]
+
+
+@router.get("", response_model=list[RunOut])
+async def list_runs(
+    user: CurrentUser,
+    session: DbSession,
+    status: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+) -> list[RunOut]:
+    runs = await service.list_runs(session, user.id, status=status, limit=limit)
+    return [RunOut.model_validate(r) for r in runs]
+
+
+@router.get("/{run_id}", response_model=RunOut)
+async def get_run(
+    run_id: uuid.UUID,
+    user: CurrentUser,
+    session: DbSession,
+) -> RunOut:
+    run = await service.get_run(session, run_id)
+    if run is None or run.user_id != user.id:
+        raise NotFoundError("Run not found")
+    return RunOut.model_validate(run)
+
+
+@router.get("/{run_id}/events", response_model=list[EventOut])
+async def get_run_events(
+    run_id: uuid.UUID,
+    user: CurrentUser,
+    session: DbSession,
+) -> list[EventOut]:
+    run = await service.get_run(session, run_id)
+    if run is None or run.user_id != user.id:
+        raise NotFoundError("Run not found")
+    events = await service.list_events(session, run_id)
+    return [EventOut.model_validate(e) for e in events]
+
+===== FILE: app/runs/schemas.py =====
+import uuid
+from datetime import datetime
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict
+
+
+class RunOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    thread_id: str
+    status: str
+    created_at: datetime
+    completed_at: datetime | None
+
+
+class EventOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    run_id: uuid.UUID
+    type: str
+    payload: dict[str, Any]
+    created_at: datetime
+
+===== FILE: app/runs/service.py =====
+import uuid
+from datetime import datetime, timezone
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.runs.models import Event, Run, RunStatus
+
+
+async def create_run(
+    session: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    thread_id: str,
+    input_payload: dict[str, str],
+) -> Run:
+    run = Run(
+        user_id=user_id,
+        thread_id=thread_id,
+        status=RunStatus.RUNNING,
+        input=input_payload,
+    )
+    session.add(run)
+    await session.commit()
+    await session.refresh(run)
+    return run
+
+
+async def get_run(session: AsyncSession, run_id: uuid.UUID) -> Run | None:
+    return await session.get(Run, run_id)
+
+
+async def list_runs(
+    session: AsyncSession,
+    user_id: uuid.UUID,
+    *,
+    status: str | None = None,
+    limit: int = 50,
+) -> list[Run]:
+    stmt = select(Run).where(Run.user_id == user_id)
+    if status is not None:
+        stmt = stmt.where(Run.status == status)
+    stmt = stmt.order_by(Run.created_at.desc()).limit(limit)
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
+
+
+async def list_events(session: AsyncSession, run_id: uuid.UUID) -> list[Event]:
+    stmt = (
+        select(Event)
+        .where(Event.run_id == run_id)
+        .order_by(Event.created_at.asc())
+    )
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
+
+
+async def update_status(session: AsyncSession, run: Run, status: str) -> Run:
+    run.status = status
+    if status in (RunStatus.COMPLETED, RunStatus.FAILED):
+        run.completed_at = datetime.now(timezone.utc)
+    await session.commit()
+    await session.refresh(run)
+    return run
+
+
+async def add_event(
+    session: AsyncSession,
+    *,
+    run_id: uuid.UUID,
+    type: str,
+    payload: dict[str, str],
+) -> Event:
+    event = Event(run_id=run_id, type=type, payload=payload)
+    session.add(event)
+    await session.commit()
+    await session.refresh(event)
+    return event
+
+===== FILE: body.json =====
+{"message":"Посчитай 10 + 20"}
+
+===== FILE: docker-compose.yml =====
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: agent_postgres
+    environment:
+      POSTGRES_USER: agent
+      POSTGRES_PASSWORD: agent
+      POSTGRES_DB: agent_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agent -d agent_db"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  pgdata:
+
+===== FILE: print.py =====
+from pathlib import Path
+
+# ---- настройки ----
+ROOT = Path(".")
+OUT = Path("project_dump.txt")
+
+EXCLUDE_DIRS = {
+    "__pycache__", ".pytest_cache", ".tests", "tests",
+    ".git", ".hg", ".svn", ".venv", "venv", "env",
+    "node_modules", ".mypy_cache", ".ruff_cache", ".idea", ".vscode",
+    "dist", "build", ".eggs",
+}
+
+EXCLUDE_SUFFIXES = {
+    ".db-wal", ".db-shm", ".db", ".sqlite", ".sqlite3",
+    ".pyc", ".pyo", ".pyd",
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".svg",
+    ".zip", ".tar", ".gz", ".bz2", ".xz", ".7z", ".rar",
+    ".pdf", ".woff", ".woff2", ".ttf", ".eot",
+    ".so", ".dll", ".dylib", ".exe", ".bin",
+    ".lock",  # при желании закомментируй, если нужен uv.lock/poetry.lock
+}
+
+EXCLUDE_NAMES = {
+    OUT.name,
+    ".DS_Store", "Thumbs.db",
+    ".env",  # ⚠️ секреты — не отправляй в LLM
+}
+
+MAX_FILE_SIZE = 200 * 1024  # 200 КБ на файл
+# --------------------
+
+def is_binary(path: Path, chunk_size: int = 8192) -> bool:
+    """Эвристика: файл считается бинарным, если в первых байтах есть NUL."""
+    try:
+        with path.open("rb") as f:
+            return b"\x00" in f.read(chunk_size)
+    except OSError:
+        return True
+
+def walk(root: Path):
+    """Рекурсивный обход файлов с исключениями."""
+    for item in sorted(root.iterdir(), key=lambda p: p.name.lower()):
+        if item.is_symlink():
+            continue
+        if item.is_dir():
+            if item.name in EXCLUDE_DIRS:
+                continue
+            yield from walk(item)
+            continue
+
+        if item.name in EXCLUDE_NAMES:
+            continue
+        if item.suffix.lower() in EXCLUDE_SUFFIXES:
+            continue
+        if item.name.startswith(".") and item.suffix == "":
+            # скрытые файлы без расширения (.gitignore и т.п.) — при желании оставить
+            pass
+
+        try:
+            if item.stat().st_size > MAX_FILE_SIZE:
+                continue
+        except OSError:
+            continue
+
+        if is_binary(item):
+            continue
+
+        yield item
+
+def relative(path: Path, base: Path) -> str:
+    try:
+        return path.relative_to(base).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+def main() -> None:
+    written = 0
+    skipped = 0
+
+    with OUT.open("w", encoding="utf-8") as out:
+        for f in walk(ROOT):
+            try:
+                text = f.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError):
+                skipped += 1
+                continue
+
+            rel = relative(f, ROOT)
+            out.write(f"===== FILE: {rel} =====\n")
+            out.write(text)
+            if not text.endswith("\n"):
+                out.write("\n")
+            out.write("\n")
+            written += 1
+
+    size_kb = OUT.stat().st_size / 1024
+    print(f"Готово: {OUT}  |  файлов: {written}, пропущено: {skipped}, размер: {size_kb:.1f} КБ")
+
+if __name__ == "__main__":
+    main()
+
+===== FILE: pyproject.toml =====
+[project]
+name = "agent-backend"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "pydantic[email]>=2.8",
+    "pydantic-settings>=2.4",
+    "sqlalchemy[asyncio]>=2.0",
+    "asyncpg>=0.29",
+    "alembic>=1.13",
+    "python-jose[cryptography]>=3.3",
+    "passlib[bcrypt]>=1.7",
+    "python-multipart>=0.0.9",
+    "bcrypt>=5.0.0",
+    "langgraph>=1.2.12",
+    "langgraph-checkpoint-postgres>=3.1.2",
+    "langchain-ollama>=1.1.0",
+    "psycopg[binary]>=3.3.6",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "httpx>=0.27",
+    "ruff>=0.6",
+]
+
+[tool.uv]
+
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"  # <- Добавьте/измените эту строку!
+testpaths = ["tests"]
+addopts = "-ra -q --strict-markers"
+filterwarnings = [
+    "ignore::DeprecationWarning:passlib.*",
+]
+
+===== FILE: README.md =====
+uv run uvicorn app.main:app --reload --port 8000  
+
+
+
+
+# 1. Изменить модели
+# 2. Сгенерировать миграцию
+uv run alembic revision --autogenerate -m "add runs table"
+
+# 3. Проверить глазами файл в alembic/versions/
+# 4. Накатить
+uv run alembic upgrade head
+
+
+uv run alembic current         # текущая версия
+uv run alembic history         # список миграций
+uv run alembic downgrade -1    # откатить на одну назад
+uv run alembic upgrade +1      # накатить одну вперёд
+uv run alembic check           # проверить, что модели соответствуют миграциям
+
+http://127.0.0.1:8000/docs
+
+{
+  "thread_id": "f9dc3552-728a-4140-91de-1c4c4f8cd82f",
+  "status": "completed",
+  "messages": [
+    {
+      "type": "human",
+      "content": "Посчитай (123 + 456) * 7",
+      "tool_calls": null
+    },
+    {
+      "type": "ai",
+      "content": "",
+      "tool_calls": [
+        {
+          "name": "calculator",
+          "args": {
+            "expression": "(123 + 456) * 7"
+          },
+          "id": "18a02ef3-14fd-407d-bd71-a4bd64bab6dc",
+          "type": "tool_call"
+        }
+      ]
+    },
+    {
+      "type": "tool",
+      "content": "4053",
+      "tool_calls": null
+    },
+    {
+      "type": "ai",
+      "content": "4053",
+      "tool_calls": null
+    }
+  ],
+  "pending_approval_id": null
+}
+
+
+## Тесты
+
+```bash
+# Все тесты
+python -m pytest
+
+# Только unit (быстро, без БД-стриминга)
+python -m pytest tests/unit
+
+# Только integration
+python -m pytest tests/integration
+
+# Один файл
+python -m pytest tests/unit/test_security.py -v
+
+# С остановкой на первой ошибке
+python -m pytest -x
+
+# С stdout (для print/debug)
+python -m pytest -s
+
+===== FILE: text.txt =====
+Handoff: LangGraph Agent Backend
+Что это
+Backend для LangGraph-агента с Human-in-the-Loop: FastAPI + PostgreSQL + JWT-auth + Ollama + SSE-стриминг. Модульная архитектура, готовая к расширению (Redis, Celery, Observability).
+
+Стек: Python 3.12, FastAPI, SQLAlchemy 2.0 (async), asyncpg, Alembic, LangGraph, langgraph-checkpoint-postgres (psycopg v3), ChatOllama (qwen3:4b-instruct), JWT (python-jose), bcrypt, uv.
+
+Окружение: Windows, локальный PostgreSQL (postgresql+asyncpg://postgres:postgres@localhost:5432/agent_db), Ollama на localhost:11434. Запуск через python run.py (не uv run — конфликт с занятыми файлами).
+
+Структура
+text
+app/
+├── main.py                     # create_app, lifespan
+├── config.py                   # Pydantic Settings
+├── core/
+│   ├── database.py             # Base, engine, session_factory, get_db, dispose_db
+│   ├── security.py             # bcrypt, JWT (access/refresh)
+│   └── exceptions.py           # NotFound, Conflict, Unauthorized, Forbidden
+├── auth/                       # User model, JWT, register/login/refresh/me
+├── agent/
+│   ├── state.py                # AgentState (messages + approval_decision)
+│   ├── tools.py                # calculator (AST-based, безопасный)
+│   ├── llm.py                  # ChatOllama singleton (lru_cache)
+│   ├── nodes.py                # llm_node, approval_node (interrupt), route_*
+│   ├── checkpointer.py         # AsyncPostgresSaver init/close/get
+│   ├── graph.py                # build_graph(checkpointer) → CompiledStateGraph
+│   ├── runtime.py              # AgentRuntimeService: start/resume/stream/get_state
+│   ├── dependencies.py         # get_runtime (из app.state)
+│   ├── schemas.py              # RunRequest, RunResponse, MessageOut
+│   └── router.py               # POST /agent/run, POST /agent/stream (SSE), GET /agent/status/{tid}
+├── hitl/
+│   ├── models.py               # Approval (FK user, run)
+│   ├── service.py              # create_pending, decide, sync_pending_interrupts
+│   └── router.py               # GET /approvals, POST /approvals/{id}/decide
+└── runs/
+    ├── models.py               # Run, Event (+ RunStatus, EventType)
+    ├── service.py              # create_run, update_status, add_event, list_*
+    └── router.py               # GET /runs, GET /runs/{id}, GET /runs/{id}/events
+
+alembic/                        # async-шаблон, env.py импортирует все модели
+run.py                          # WindowsSelectorEventLoopPolicy + uvicorn
+Схема БД (миграции)
+Наши таблицы (Alembic):
+
+users — id (UUID), email (unique), hashed_password, is_active, is_superuser, timestamps
+
+approvals — id, user_id FK, run_id FK (nullable, SET NULL), thread_id, interrupt_id, status (pending/approved/rejected), payload (JSONB), comment, decided_at
+
+runs — id, user_id FK, thread_id, status (running/interrupted/completed/failed), input (JSONB), created_at, completed_at
+
+events — id, run_id FK, type (llm_end/tool_end/interrupt/resume/end/error/node_update), payload (JSONB), created_at
+
+LangGraph-таблицы (управляются AsyncPostgresSaver.setup()): checkpoints, checkpoint_blobs, checkpoint_writes, checkpoint_migrations. В миграциях не создаются — в alembic/env.py есть include_object, который их фильтрует.
+
+Важно: Alembic env.py импортирует app.auth.models, app.hitl.models, app.runs.models — иначе autogenerate падает с NoReferencedTableError.
+
+Граф
+text
+START → llm ─┬─→ approval ─┬─→ tools → llm
+             │              └─→ llm (rejected)
+             └─→ END
+llm_node — ChatOllama с bind_tools([calculator]), системный промпт по-русски
+
+route_after_llm — если tool_calls → approval, иначе END
+
+approval_node — вызывает interrupt({type: tool_approval, tool_calls}). При resume возвращает решение. Если rejected — добавляет ToolMessage("Пользователь отклонил вызов инструмента.") и идёт в llm
+
+tool_node — стандартный ToolNode([calculator])
+
+Checkpointer: AsyncPostgresSaver держится открытым на весь lifespan (context manager). URL конвертируется postgresql+asyncpg:// → postgresql://.
+
+Ключевые механики
+HITL flow:
+
+POST /agent/run → создаёт Run (status=running) → runtime.start_run → graph.ainvoke
+
+LLM запрашивает tool_call → approval_node вызывает interrupt() → граф останавливается
+
+Проверяем state.next — если непусто, Run.status=interrupted, создаём Approval через sync_pending_interrupts
+
+POST /approvals/{id}/decide → обновляет Approval → runtime.resume_run(Command(resume={approved, comment}))
+
+Resume: approval_node выполняется заново, interrupt() возвращает значение → переход в tools или llm
+
+Run обновляется до completed/interrupted (если новый interrupt)
+
+SSE stream (POST /agent/stream):
+
+Возвращает StreamingResponse(media_type="text/event-stream")
+
+Отдельная БД-сессия через get_session_factory() (не request-scoped — иначе закроется до конца стрима)
+
+События: run_started → llm_end (пишется в БД, не в SSE) → interrupt → interrupted → completed/error
+
+runtime.stream_run использует graph.astream(stream_mode="updates") с callback on_event для записи в БД
+
+Проверенный функционал
+Register → Login → JWT (access + refresh) → /auth/me ✓
+
+POST /agent/run: обычный ответ + tool_call → interrupt ✓
+
+POST /approvals/{id}/decide: approve → tool выполняется; reject → LLM отвечает без tool ✓
+
+Persist: тот же thread_id → граф помнит контекст ✓
+
+GET /runs — список с фильтром по статусу ✓
+
+GET /runs/{id}/events — полный audit log (включая llm_end, которые не идут в SSE) ✓
+
+SSE: run_started → interrupt → interrupted ✓
+
+Известные особенности
+Windows event loop: run.py ставит WindowsSelectorEventLoopPolicy до импорта uvicorn. Иначе asyncpg рвёт соединения с WinError 10054.
+
+uv run и запущенный uvicorn: uv пытается синхронизировать venv и падает с os error 5 на занятых файлах. Запускать приложение через python run.py, а не uv run. Если нужно uv run — сначала остановить uvicorn.
+
+PowerShell + curl: использовать Invoke-RestMethod + ConvertTo-Json, либо curl.exe с бэктиками для экранирования. Внутри одинарных кавычек \" не работает.
+
+websockets иногда ломается после неудачных uv run — лечится python -m pip install --force-reinstall websockets.
+
+Ollama qwen3:4b-instruct читерит в reject-сценарии: отвечает «100 * 5 = 500» вместо отказа, хотя инструмент отклонён. Не баг кода — модель. Лечится усилением промпта или большей моделью (отложено).
+
+Что дальше (рекомендация)
+Tests — единственное, что уменьшает риск дальнейших изменений. План:
+
+tests/conftest.py: фикстуры test_engine/test_session (отдельная БД agent_test), test_client (httpx AsyncClient), authenticated_client, mock_llm (FakeChatModel с детерминированным tool_call)
+
+tests/unit/: security, auth.service, hitl.service, runs.service, agent.tools
+
+tests/integration/: auth_flow, agent_flow (run→interrupt→approve→completed), agent_reject, stream
+
+Не покрываем: SSE-тайминги (флаки), реальную Ollama (медленно)
+
+Альтернативы (после тестов):
+
+Observability: structured logging (JSON + run_id/thread_id/user_id), OpenTelemetry, Prometheus
+
+SSE refactor: async-итератор вместо callback — чтобы llm_end/tool_end шли в UI
+
+Redis: rate limiting на /auth/login, ревокация refresh
+
+Celery: вынести долгие прогоны из HTTP
+
+Полезные команды
+powershell
+# Запуск
+python run.py
+
+# Миграции
+uv run alembic revision --autogenerate -m "описание"
+uv run alembic upgrade head
+uv run alembic downgrade -1
+uv run alembic current
+
+# Проверить metadata (все 4 таблицы)
+python -c "from app.core.database import Base; import app.auth.models, app.hitl.models, app.runs.models; print(sorted(Base.metadata.tables.keys()))"
+# → ['approvals', 'events', 'runs', 'users']
+
+# Проверить роуты приложения
+python -c "from app.main import app; print([r.path for r in app.routes if hasattr(r, 'path')])"
+
+# Прибить висящие процессы
+Get-Process python | Where-Object { $_.Path -like "*LANGRAPH_AGENT*" } | Stop-Process -Force
+
+# Прямая проверка БД (без psql)
+python -c "
+import asyncio, asyncpg
+async def main():
+    conn = await asyncpg.connect('postgresql://postgres:postgres@localhost:5432/agent_db')
+    rows = await conn.fetch(\"SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY tablename\")
+    for r in rows: print(' -', r['tablename'])
+    await conn.close()
+asyncio.run(main())
+"
+PowerShell smoke-test полного цикла
+powershell
+$login = Invoke-RestMethod -Uri "http://localhost:8000/auth/login" `
+  -Method Post -ContentType "application/json" `
+  -Body (@{ email="test@example.com"; password="supersecret" } | ConvertTo-Json)
+$headers = @{ Authorization = "Bearer $($login.access_token)" }
+
+$run = Invoke-RestMethod -Uri "http://localhost:8000/agent/run" `
+  -Method Post -Headers $headers -ContentType "application/json" `
+  -Body (@{ message="Посчитай (123 + 456) * 7" } | ConvertTo-Json)
+$run | ConvertTo-Json -Depth 10   # status=interrupted, pending_approval_id=<uuid>, run_id=<uuid>
+
+$result = Invoke-RestMethod -Uri "http://localhost:8000/approvals/$($run.pending_approval_id)/decide" `
+  -Method Post -Headers $headers -ContentType "application/json" `
+  -Body (@{ approved=$true; comment="ok" } | ConvertTo-Json)
+$result | ConvertTo-Json -Depth 10   # status=completed, финальное ai "4053"
+
+Invoke-RestMethod -Uri "http://localhost:8000/runs" -Headers $headers | ConvertTo-Json -Depth 10
+Invoke-RestMethod -Uri "http://localhost:8000/runs/$($run.run_id)/events" -Headers $headers | ConvertTo-Json -Depth 10
+
+# SSE
+'{"message":"Посчитай 10 + 20"}' | Out-File -Encoding utf8 body.json
+curl.exe -N -X POST http://localhost:8000/agent/stream `
+  -H "Content-Type: application/json" `
+  -H "Authorization: Bearer $($login.access_token)" `
+  --data-binary "@body.json"
+Env
+text
+APP_NAME=agent-backend
+APP_ENV=dev
+DEBUG=true
+DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/agent_db
+JWT_SECRET_KEY=change-me-in-prod
+JWT_ALGORITHM=HS256
+ACCESS_TOKEN_EXPIRE_MINUTES=30
+REFRESH_TOKEN_EXPIRE_DAYS=7
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=qwen3:4b-instruct
+OLLAMA_TEMPERATURE=0.3
+OLLAMA_TOP_P=0.9
+Что сказать новому ИИ
+«Это handoff для LangGraph-агент-бэкенда. Всё работает: auth, HITL, runs, events, SSE. Схема БД зафиксирована Alembic. Следующий спринт — тесты (pytest + httpx + testcontainers/отдельная БД + mock LLM). Начни с tests/conftest.py и setup-а тестовой БД. Полная структура и контекст — в этом документе.»
+
+
+===== FILE: дальше,txt =====
+Что дальше
+Осталось два крупных направления:
+
+A. Observability (рекомендую)
+
+Structured logging: JSON-формат с run_id, thread_id, user_id в контексте (через contextvars)
+
+OpenTelemetry: автотрейсинг FastAPI + SQLAlchemy + опционально LangGraph
+
+Prometheus /metrics: счётчики runs, latency узлов, pending approvals
+
+Что это даст: как только появится реальный трафик, сможешь видеть, где узкие места и что сломалось. Для LangGraph-агента особенно ценно — latency узлов llm vs tools vs approval.
+
+B. Celery + Redis
+
+Redis: rate limiting на /auth/login, ревокация refresh-токенов
+
+Celery: вынести выполнение агента из HTTP-запроса (важно, если граф начнёт долго работать — сейчас sync-run висит в HTTP)
+
+Плюс: фоновые задачи (отправка email, batch-обработка)
+
+Что это даст: развязка HTTP и агента. Но пока граф работает за секунды — не критично.
+
+C. RAG
+
+pgvector + таблица embeddings
+
+retriever как tool
+
+Отдельный узел в графе для retrieval
+
+Моя рекомендация: A (Observability). Он не требует новых сервисов, полезен сразу, и на его базе потом легко добавить метрики для Celery/Redis.
+
+Выбирай направление — и продолжим.
+

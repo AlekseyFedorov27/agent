@@ -11,6 +11,7 @@ class RunOut(BaseModel):
     id: uuid.UUID
     thread_id: str
     status: str
+    input: dict[str, Any] 
     created_at: datetime
     completed_at: datetime | None
 
