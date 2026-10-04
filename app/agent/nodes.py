@@ -6,28 +6,22 @@ from app.agent.llm import get_llm
 from app.agent.state import AgentState
 from app.agent.tools import calculator
 
-SYSTEM_PROMPT = """Ты — ассистент-калькулятор. Отвечай на русском языке.
+BASE_SYSTEM_PROMPT = """Ты — ассистент-калькулятор. Отвечай на русском языке.
 
 ПРАВИЛА:
 1. Для любых арифметических выражений обязательно вызывай инструмент `calculator`.
    Никогда не считай в уме.
-2. Всегда форматируй ответ в Markdown:
-   - если шагов больше одного — нумерованный список;
-   - формулы и промежуточные результаты — инлайн-кодом: `(123 + 456) * 7`;
-   - итоговый ответ — **жирным**;
-   - заголовки — через `##` (например, «## Решение», «## Ответ»).
-3. Не оборачивай весь ответ в один блок кода — только формулы/код.
-4. Отвечай кратко: без воды, без повторов условия задачи.
-
-ПРИМЕР ОТВЕТА:
+2. Результат инструмента — истина. Копируй его в ответ дословно.
+3. Формат ответа — Markdown:
 
 ## Решение
-1. Выражение: `(123 + 456) * 7`
-2. Промежуточный результат: `579`
-3. Итог: **4053**
+Выражение: `<точное выражение>`
+Результат: `<точное значение из calculator>`
 
 ## Ответ
-**4053**
+**<точное значение>**
+
+4. Отвечай кратко, без воды.
 """
 
 TOOLS = [calculator]
@@ -52,18 +46,41 @@ def _ensure_markdown(text: str) -> str:
     return "\n\n".join(paragraphs)
 
 
+def _compose_system_prompt(user_name: str, user_prompt: str) -> str:
+    parts: list[str] = [BASE_SYSTEM_PROMPT]
+
+    if user_name:
+        parts.append(
+            f"Имя пользователя: {user_name}. "
+            f"Обращайся к нему по имени, когда это уместно."
+        )
+
+    if user_prompt and user_prompt.strip():
+        parts.append(
+            "ДОПОЛНИТЕЛЬНЫЕ ИНСТРУКЦИИ ОТ ПОЛЬЗОВАТЕЛЯ "
+            "(имеют приоритет над общими правилами, кроме безопасности):\n"
+            + user_prompt.strip()
+        )
+
+    return "\n\n".join(parts)
+
+
 def llm_node(state: AgentState) -> dict:
     llm = get_llm().bind_tools(TOOLS)
     messages = state["messages"]
 
+    user_name = state.get("user_name") or ""
+    user_prompt = state.get("system_prompt") or ""
+    system_text = _compose_system_prompt(user_name, user_prompt)
+
+    # Всегда пересобираем системное сообщение — оно зависит от пользователя
     if not messages or not isinstance(messages[0], SystemMessage):
-        messages = [SystemMessage(content=SYSTEM_PROMPT), *messages]
+        messages = [SystemMessage(content=system_text), *messages]
+    else:
+        messages = [SystemMessage(content=system_text), *messages[1:]]
 
     response = llm.invoke(messages)
 
-    # Применяем только к текстовым ответам.
-    # Если response содержит tool_calls — content часто пустой,
-    # и трогать его нельзя.
     if not getattr(response, "tool_calls", None) and response.content:
         response.content = _ensure_markdown(response.content)
 

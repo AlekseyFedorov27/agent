@@ -10,11 +10,17 @@ const router = useRouter()
 const email = ref('')
 const password = ref('')
 const password2 = ref('')
+const name = ref('')
+const position = ref('')
 const loading = ref(false)
 const error = ref<string | null>(null)
 
 async function onSubmit() {
   error.value = null
+  if (!name.value.trim()) {
+    error.value = 'Укажите имя'
+    return
+  }
   if (password.value !== password2.value) {
     error.value = 'Пароли не совпадают'
     return
@@ -25,7 +31,12 @@ async function onSubmit() {
   }
   loading.value = true
   try {
-    await auth.register(email.value.trim(), password.value)
+    await auth.register({
+      email: email.value.trim(),
+      password: password.value,
+      name: name.value.trim(),
+      position: position.value.trim() || null,
+    })
     router.push('/chat')
   } catch (e) {
     error.value = extractApiError(e)
@@ -39,7 +50,17 @@ async function onSubmit() {
   <div class="auth-shell">
     <form class="auth-card" @submit.prevent="onSubmit">
       <h1>Регистрация</h1>
-      <p class="muted">Agent Chat</p>
+      <p class="muted auth-card-subtitle">Agent Chat</p>
+
+      <label>
+        Имя
+        <input v-model="name" type="text" required maxlength="120" />
+      </label>
+
+      <label>
+        Должность <span class="optional">(необязательно)</span>
+        <input v-model="position" type="text" maxlength="120" />
+      </label>
 
       <label>
         Email

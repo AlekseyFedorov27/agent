@@ -9,6 +9,12 @@ const router = createRouter({
       redirect: '/chat',
     },
     {
+      path: '/admin',
+      name: 'admin',
+      component: () => import('@/views/AdminView.vue'),
+      meta: { requiresAuth: true, requiresAdmin: true },
+    },
+    {
       path: '/login',
       name: 'login',
       component: () => import('@/views/LoginView.vue'),
@@ -36,6 +42,9 @@ router.beforeEach(async (to) => {
 
   if (to.meta.requiresAuth && !auth.isAuthenticated) {
     return { name: 'login', query: { redirect: to.fullPath } }
+  }
+  if (to.meta.requiresAdmin && !auth.isAdmin) {
+    return { name: 'chat' }        // ← не админа выкидываем в чат
   }
   if (to.meta.guestOnly && auth.isAuthenticated) {
     return { name: 'chat' }

@@ -41,7 +41,13 @@ async def register(
     data: UserCreate,
     session: Annotated[AsyncSession, Depends(get_db)],
 ) -> UserPublic:
-    user = await register_user(session, data.email, data.password)
+    user = await register_user(
+        session,
+        data.email,
+        data.password,
+        name=data.name,
+        position=data.position,
+    )
     return UserPublic.model_validate(user)
 
 

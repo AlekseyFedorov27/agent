@@ -21,6 +21,12 @@ export interface RunResponse {
   pending_approval_id: string | null
 }
 
+export interface ThreadStatusResponse{
+        thread_id: string
+        next_nodes: string,
+        messages: string,
+}
+
 export interface ApprovalOut {
   id: string
   thread_id: string
@@ -32,6 +38,16 @@ export interface ApprovalOut {
   comment: string | null
   created_at: string
   decided_at: string | null
+}
+
+
+export interface RunOut{
+    id: string
+    thread_id: string
+    status: string
+    input: { [key: string]: any }
+    created_at: string
+    completed_at: string
 }
 
 export const agentApi = {

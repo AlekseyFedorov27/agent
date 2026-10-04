@@ -9,14 +9,22 @@ export interface TokenPair {
 export interface UserPublic {
   id: string
   email: string
+  name: string
+  position: string | null
+  system_prompt: string | null
   is_active: boolean
   is_superuser: boolean
   created_at: string
 }
 
 export const authApi = {
-  async register(email: string, password: string): Promise<UserPublic> {
-    const { data } = await http.post<UserPublic>('/auth/register', { email, password })
+  async register(payload: {
+    email: string
+    password: string
+    name: string
+    position?: string | null
+  }): Promise<UserPublic> {
+    const { data } = await http.post<UserPublic>('/auth/register', payload)
     return data
   },
   async login(email: string, password: string): Promise<TokenPair> {

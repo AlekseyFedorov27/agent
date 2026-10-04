@@ -15,7 +15,14 @@ async def get_user_by_id(session: AsyncSession, user_id) -> User | None:
     return await session.get(User, user_id)
 
 
-async def register_user(session: AsyncSession, email: str, password: str) -> User:
+async def register_user(
+    session: AsyncSession,
+    email: str,
+    password: str,
+    *,
+    name: str,
+    position: str | None = None,
+) -> User:
     email = email.lower()
     existing = await get_user_by_email(session, email)
     if existing is not None:
@@ -23,6 +30,8 @@ async def register_user(session: AsyncSession, email: str, password: str) -> Use
 
     user = User(
         email=email,
+        name=name.strip(),
+        position=(position.strip() if position else None),
         hashed_password=hash_password(password),
     )
     session.add(user)

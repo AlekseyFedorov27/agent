@@ -11,6 +11,7 @@ from app.config import get_settings
 from app.core.database import dispose_db
 from app.hitl.router import router as hitl_router
 from app.runs.router import router as runs_router
+from app.auth.admin.router import router as admin_router
 
 
 @asynccontextmanager
@@ -35,6 +36,7 @@ def create_app() -> FastAPI:
         return {"status": "ok", "env": settings.app_env}
 
     app.include_router(auth_router)
+    app.include_router(admin_router) 
     app.include_router(agent_router)
     app.include_router(hitl_router)
     app.include_router(runs_router)
