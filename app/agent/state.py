@@ -6,4 +6,6 @@ from langgraph.graph.message import add_messages
 
 class AgentState(TypedDict, total=False):
     messages: Annotated[list[BaseMessage], add_messages]
-    approval_decision: str | None  # "approved" | "rejected"
+    approval_decision: str | None
+    user_name: str
+    system_prompt: str

@@ -140,8 +140,13 @@ const suggestions = [
       </div>
 
       <div class="sidebar-foot">
-        <div class="user muted">{{ auth.user?.email }}</div>
-        <button class="ghost-btn" @click="logout">Выйти</button>
+        <div class="user muted">{{ auth.user?.name || auth.user?.email }}</div>
+        <div class="foot-actions">
+          <RouterLink v-if="auth.isAdmin" to="/admin" class="ghost-btn">
+            Админка
+          </RouterLink>
+          <button class="ghost-btn" @click="logout">Выйти</button>
+        </div>
       </div>
     </aside>
 
@@ -156,6 +161,10 @@ const suggestions = [
               {{ threadId ? `Тред ${threadId.slice(0, 8)}` : 'Новый диалог' }}
             </div>
           </div>
+        </div>
+        <div class="sub muted">
+          {{ auth.user?.name }}
+          <span v-if="auth.user?.position"> · {{ auth.user.position }}</span>
         </div>
       </header>
 

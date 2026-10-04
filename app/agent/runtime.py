@@ -50,9 +50,20 @@ class AgentRuntimeService:
 
     # --- Базовые операции -------------------------------------------------- #
 
-    async def start_run(self, thread_id: str, message: str) -> dict:
+    async def start_run(
+        self,
+        thread_id: str,
+        message: str,
+        *,
+        user_name: str = "",
+        system_prompt: str = "",
+    ) -> dict:
         return await self.graph.ainvoke(
-            {"messages": [HumanMessage(content=message)]},
+            {
+                "messages": [HumanMessage(content=message)],
+                "user_name": user_name,
+                "system_prompt": system_prompt,
+            },
             config=self._config(thread_id),
         )
 
@@ -78,6 +89,26 @@ class AgentRuntimeService:
                 )
         return result
 
+    # --- Чистка чекпоинтов ------------------------------------------------- #
+
+    async def delete_thread_checkpoints(self, thread_id: str) -> None:
+        """
+        Чистит LangGraph-чекпоинты по thread_id.
+        У AsyncPostgresSaver есть метод adelete_thread; если его нет —
+        просто ничего не делаем (не критично, thread_id — UUID и не переиспользуется).
+        """
+        saver = getattr(self.graph, "checkpointer", None)
+        if saver is None:
+            return
+        deleter = getattr(saver, "adelete_thread", None)
+        if deleter is None:
+            return
+        try:
+            await deleter(thread_id)
+        except Exception:
+            # Не валим всю операцию из-за чекпоинтов
+            pass
+
     # --- Streaming --------------------------------------------------------- #
 
     async def stream_run(
@@ -86,6 +117,8 @@ class AgentRuntimeService:
         message: str,
         *,
         on_event: EventHandler,
+        user_name: str = "",
+        system_prompt: str = "",
     ) -> dict:
         """
         Запускает граф со стримингом.
@@ -93,7 +126,11 @@ class AgentRuntimeService:
         Возвращает финальный state.values.
         """
         async for chunk in self.graph.astream(
-            {"messages": [HumanMessage(content=message)]},
+            {
+                "messages": [HumanMessage(content=message)],
+                "user_name": user_name,
+                "system_prompt": system_prompt,
+            },
             config=self._config(thread_id),
             stream_mode="updates",
         ):
@@ -116,23 +153,3 @@ class AgentRuntimeService:
 
         state = await self.get_state(thread_id)
         return dict(state.values) if state.values else {}
-
-
-
-    async def delete_thread_checkpoints(self, thread_id: str) -> None:
-        """
-        Чистит LangGraph-чекпоинты по thread_id.
-        У AsyncPostgresSaver есть метод adelete_thread; если его нет —
-        просто ничего не делаем (не критично, thread_id — UUID и не переиспользуется).
-        """
-        saver = getattr(self.graph, "checkpointer", None)
-        if saver is None:
-            return
-        deleter = getattr(saver, "adelete_thread", None)
-        if deleter is None:
-            return
-        try:
-            await deleter(thread_id)
-        except Exception:
-            # Не валим всю операцию из-за чекпоинтов
-            pass    

@@ -10,6 +10,8 @@ export const useAuthStore = defineStore('auth', () => {
   const ready = ref(false)
 
   const isAuthenticated = computed(() => !!accessToken.value)
+  const isAdmin = computed(() => !!user.value?.is_superuser)
+
 
   function _persistTokens(access: string, refresh: string) {
     accessToken.value = access
@@ -24,9 +26,14 @@ export const useAuthStore = defineStore('auth', () => {
     user.value = await authApi.me()
   }
 
-  async function register(email: string, password: string) {
-    await authApi.register(email, password)
-    await login(email, password)
+  async function register(payload: {
+    email: string
+    password: string
+    name: string
+    position?: string | null
+  }) {
+    await authApi.register(payload)
+    await login(payload.email, payload.password)
   }
 
   async function fetchMe() {
@@ -57,6 +64,11 @@ export const useAuthStore = defineStore('auth', () => {
   return {
     accessToken, refreshToken, user, ready,
     isAuthenticated,
-    login, register, fetchMe, bootstrap, logout,
+    login, 
+    register, 
+    fetchMe, 
+    bootstrap, 
+    logout,
+    isAdmin
   }
 })

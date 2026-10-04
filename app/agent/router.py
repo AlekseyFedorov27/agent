@@ -49,7 +49,12 @@ async def run_agent(
         input_payload={"message": data.message},
     )
 
-    result = await runtime.start_run(thread_id, data.message)
+    result = await runtime.start_run(
+        thread_id,
+        data.message,
+        user_name=user.name,
+        system_prompt=user.system_prompt or "",
+    )
     state = await runtime.get_state(thread_id)
     next_nodes = list(state.next) if state.next else []
     messages = result.get("messages", [])
@@ -117,7 +122,12 @@ async def stream_agent(
                 )
 
             try:
-                await runtime.stream_run(thread_id, message, on_event=on_event)
+                await runtime.stream_run(
+                    thread_id, message,
+                    on_event=on_event,
+                    user_name=user.name,
+                    system_prompt=user.system_prompt or "",
+                )
                 state = await runtime.get_state(thread_id)
                 next_nodes = list(state.next) if state.next else []
 
