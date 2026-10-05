@@ -214,13 +214,13 @@ class TestToolApprovalFlow:
 
         r = await client.post(
             "/auth/register",
-            json={"email": "other@test.com", "password": "password123"},
+            json={"email": "other@test.com", "password": "password123", "name": "Other User"},
         )
         assert r.status_code == 201, f"register failed: {r.status_code} {r.text}"
 
         r = await client.post(
             "/auth/login",
-            json={"email": "other@test.com", "password": "password123"},
+            json={"email": "other@test.com", "password": "password123", "name": "Other User"},
         )
         assert r.status_code == 200, f"login failed: {r.status_code} {r.text}"
         other_token = r.json()["access_token"]
@@ -305,11 +305,11 @@ class TestRunsEndpoints:
 
         await client.post(
             "/auth/register",
-            json={"email": "other@test.com", "password": "password123"},
+            json={"email": "other@test.com", "password": "password123", "name": "Other User"},
         )
         r = await client.post(
             "/auth/login",
-            json={"email": "other@test.com", "password": "password123"},
+            json={"email": "other@test.com", "password": "password123", "name": "Other User"},
         )
         other_token = r.json()["access_token"]
 

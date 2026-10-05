@@ -7,12 +7,10 @@ import { extractApiError } from '@/api/client'
 const props = defineProps<{
   open: boolean
   user?: UserPublic | null
+  saveFn: (payload: AdminUserCreate | AdminUserUpdate) => Promise<void>
 }>()
 
-const emit = defineEmits<{
-  (e: 'close'): void
-  (e: 'save', payload: AdminUserCreate | AdminUserUpdate): Promise<void>
-}>()
+const emit = defineEmits<{ (e: 'close'): void }>()
 
 const isEdit = computed(() => !!props.user)
 
@@ -88,14 +86,14 @@ async function onSubmit() {
     if (isEdit.value) {
       const payload: AdminUserUpdate = { ...base }
       if (form.password) payload.password = form.password
-      await emit('save', payload)
+      await props.saveFn(payload)
     } else {
       const payload: AdminUserCreate = {
         ...base,
         email: form.email.trim(),
         password: form.password,
       }
-      await emit('save', payload)
+      await props.saveFn(payload)
     }
     emit('close')
   } catch (e) {
@@ -172,10 +170,8 @@ async function onSubmit() {
           <p v-if="error" class="error">{{ error }}</p>
 
           <div class="modal-actions">
-            <button class="ghost-btn" :disabled="working" @click.self="emit('close')">
-              Отмена
-            </button>
-            <button :disabled="working" @click.self="onSubmit">
+            <button class="ghost-btn" :disabled="working" @click="emit('close')">Отмена</button>
+            <button :disabled="working" @click="onSubmit">
               {{ working ? 'Сохраняем…' : 'Сохранить' }}
             </button>
           </div>

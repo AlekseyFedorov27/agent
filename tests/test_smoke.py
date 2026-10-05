@@ -15,7 +15,11 @@ async def test_register_and_login(client: AsyncClient) -> None:
     # Register
     r = await client.post(
         "/auth/register",
-        json={"email": "smoke@test.com", "password": "password123"},
+        json={
+            "email": "smoke@test.com",
+            "password": "password123",
+            "name": "Smoke User",
+        },
     )
     assert r.status_code == 201, r.text
     assert r.json()["email"] == "smoke@test.com"

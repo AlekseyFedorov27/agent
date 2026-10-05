@@ -78,7 +78,7 @@ function logout() {
 }
 
 function selectThread(id: string) {
-  if (id === threadId.value) return
+  if (id === threadId.value || loading.value) return
   chat.loadThread(id)
 }
 

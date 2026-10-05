@@ -294,30 +294,24 @@ async def authenticated_client(
 # ===========================================================================
 
 class FakeLLM:
-    """
-    Минимальный мок ChatOllama.
-    Ответы задаются заранее; каждый вызов invoke() возвращает следующий.
-    bind_tools() — no-op, возвращает self.
-    """
-
     def __init__(self, responses: list[AIMessage]):
-        self.responses = list(responses)
-        self._idx = 0
-        self.calls: list[Any] = []
+        self._responses = list(responses)
+        self._index = 0
+        self.calls: list[list] = []      # история входных messages
 
-    def bind_tools(self, tools, **kwargs) -> "FakeLLM":
+    def invoke(self, messages, **kwargs):
+        if self._index >= len(self._responses):
+            raise RuntimeError("FakeLLM: no more responses")
+        response = self._responses[self._index]
+        self._index += 1
+        self.calls.append(list(messages))
+        return response
+
+    async def ainvoke(self, messages, **kwargs):
+        return self.invoke(messages, **kwargs)
+
+    def bind_tools(self, tools):
         return self
-
-    def invoke(self, messages, **kwargs) -> AIMessage:
-        self.calls.append(messages)
-        if self._idx >= len(self.responses):
-            raise AssertionError(
-                f"FakeLLM: no more responses (index={self._idx}, "
-                f"got {len(self.responses)} total)"
-            )
-        resp = self.responses[self._idx]
-        self._idx += 1
-        return resp
 
     @property
     def call_count(self) -> int:

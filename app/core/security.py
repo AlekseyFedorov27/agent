@@ -8,12 +8,13 @@ from app.config import get_settings
 
 TokenType = Literal["access", "refresh"]
 
-
+MAX_PASSWORD_BYTES = 72
 # --------------------------------------------------------------------------- #
 # Пароли
 # --------------------------------------------------------------------------- #
 
 def hash_password(password: str) -> str:
+    validate_password_bytes(password)
     salt = bcrypt.gensalt()
     return bcrypt.hashpw(password.encode("utf-8"), salt).decode("utf-8")
 
@@ -24,6 +25,11 @@ def verify_password(plain: str, hashed: str) -> bool:
     except ValueError:
         return False
 
+
+def validate_password_bytes(value: str) -> str:
+    if len(value.encode("utf-8")) > MAX_PASSWORD_BYTES:
+        raise ValueError("Пароль слишком длинный (максимум 72 байта, кириллица = 2 байта на символ)")
+    return value
 
 # --------------------------------------------------------------------------- #
 # JWT

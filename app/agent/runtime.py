@@ -1,6 +1,6 @@
 import re
 from collections.abc import AsyncIterator
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 from langchain_core.messages import HumanMessage
 from langgraph.graph.state import CompiledStateGraph
@@ -61,9 +61,6 @@ def _serialize_messages(messages: list) -> list[MessageOut]:
 # --------------------------------------------------------------------------- #
 # Runtime
 # --------------------------------------------------------------------------- #
-
-EventHandler = Callable[[str, dict], Awaitable[None]]
-
 
 class AgentRuntimeService:
     def __init__(self, graph: CompiledStateGraph):
