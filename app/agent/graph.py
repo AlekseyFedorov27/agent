@@ -1,4 +1,5 @@
 from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 
 from app.agent.nodes import (
@@ -11,7 +12,15 @@ from app.agent.nodes import (
 from app.agent.state import AgentState
 
 
-def build_graph(checkpointer: BaseCheckpointSaver):
+def build_graph(checkpointer: BaseCheckpointSaver | None = None):
+    """
+    Строит граф агента.
+
+    Параметр checkpointer может быть:
+      - экземпляром BaseCheckpointSaver (например, AsyncPostgresSaver) — используется как есть;
+      - None — создаётся InMemorySaver (для langgraph dev / Studio);
+      - любым другим значением (dict, True, False) — игнорируется, создаётся InMemorySaver.
+    """
     builder = StateGraph(AgentState)
 
     builder.add_node("llm", llm_node)
@@ -31,4 +40,11 @@ def build_graph(checkpointer: BaseCheckpointSaver):
     )
     builder.add_edge("tools", "llm")
 
-    return builder.compile(checkpointer=checkpointer)
+    # Если передан корректный saver — используем его.
+    # Иначе (None, dict, True, False) — берём InMemorySaver.
+    if isinstance(checkpointer, BaseCheckpointSaver):
+        saver = checkpointer
+    else:
+        saver = InMemorySaver()
+
+    return builder.compile(checkpointer=saver)

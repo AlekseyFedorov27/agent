@@ -182,7 +182,7 @@ input:focus, textarea:focus { border-color: var(--accent); }
   gap: 6px;
   align-items: center;
 }
-.foot-actions .ghost-btn { font-size: 12.5px; padding: 5px 10px; }
+.foot-actions .ghost-btn { font-size: 12.5px; padding: 5px 10px; border-radius: 8px; }
 .foot-actions a { text-decoration: none; }
 
 /* ---------- Admin page ---------- */
