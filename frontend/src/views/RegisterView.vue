@@ -58,7 +58,7 @@ async function onSubmit() {
       </label>
 
       <label>
-        Должность <span class="optional">(необязательно)</span>
+        Должность (необязательно)
         <input v-model="position" type="text" maxlength="120" />
       </label>
 

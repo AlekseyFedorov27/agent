@@ -1,15 +1,28 @@
 import jsPDF from 'jspdf'
 import html2canvas from 'html2canvas'
 
-/**
- * Инжектит «печатные» стили внутрь клона: белый фон + чёрный текст.
- * Возвращает сам клон, вставленный в off-screen контейнер.
- */
-function cloneForPrint(source: HTMLElement): { clone: HTMLElement; cleanup: () => void } {
+// ---------------------------------------------------------------------------
+// Настройки страницы (в pt; A4 ≈ 595 × 842 pt)
+// ---------------------------------------------------------------------------
+const PAGE_MARGIN_TOP = 40
+const PAGE_MARGIN_BOTTOM = 40
+const PAGE_MARGIN_SIDE = 32
+const BLOCK_GAP = 10 // отступ между блоками на странице
+
+// Номер страницы (ASCII, чтобы работал встроенный helvetica без TTF)
+const PAGE_NUMBER_FONT_SIZE = 9
+const PAGE_NUMBER_COLOR: [number, number, number] = [130, 130, 130]
+const PAGE_NUMBER_OFFSET_FROM_BOTTOM = 18 // от низа листа до baseline номера
+
+// ---------------------------------------------------------------------------
+// Клон для печати: белый фон + чёрный текст, независимо от темы приложения
+// ---------------------------------------------------------------------------
+function cloneForPrint(source: HTMLElement): {
+  clone: HTMLElement
+  cleanup: () => void
+} {
   const clone = source.cloneNode(true) as HTMLElement
 
-  // Внешний контейнер: держим фиксированную ширину, чтобы перенос строк
-  // совпадал с оригиналом, но держим off-screen.
   const wrapper = document.createElement('div')
   wrapper.style.position = 'fixed'
   wrapper.style.left = '-10000px'
@@ -20,7 +33,6 @@ function cloneForPrint(source: HTMLElement): { clone: HTMLElement; cleanup: () =
   wrapper.style.padding = '16px'
   wrapper.style.zIndex = '-1'
 
-  // ВАЖНО: сбрасываем унаследованные CSS-переменные темы
   wrapper.className = 'pdf-print-root'
 
   clone.style.background = '#ffffff'
@@ -29,9 +41,6 @@ function cloneForPrint(source: HTMLElement): { clone: HTMLElement; cleanup: () =
   wrapper.appendChild(clone)
   document.body.appendChild(wrapper)
 
-  // Форсируем тёмный текст во всех дочерних узлах.
-  // html2canvas читает computed styles, поэтому !important через CSSOM
-  // работает надёжнее всего.
   const all = wrapper.querySelectorAll<HTMLElement>('*')
   all.forEach((el) => {
     el.style.setProperty('color', '#000000', 'important')
@@ -39,27 +48,22 @@ function cloneForPrint(source: HTMLElement): { clone: HTMLElement; cleanup: () =
     el.style.setProperty('border-color', '#d0d0d0', 'important')
   })
 
-  // Точечно: код-блоки и inline-код — на светлом фоне
   wrapper.querySelectorAll<HTMLElement>('pre, code').forEach((el) => {
     el.style.setProperty('background-color', '#f3f4f6', 'important')
     el.style.setProperty('color', '#000000', 'important')
-    el.style.setProperty('border', 'none', 'important')                // ← нет рамки
+    el.style.setProperty('border', 'none', 'important')
   })
 
-  // Ссылки — тёмно-синие, чтобы отличались от обычного текста
   wrapper.querySelectorAll<HTMLElement>('a').forEach((el) => {
     el.style.setProperty('color', '#1a3ec8', 'important')
     el.style.setProperty('text-decoration', 'underline', 'important')
   })
 
-  // Цитаты — серый маркер, но текст чёрный
   wrapper.querySelectorAll<HTMLElement>('blockquote').forEach((el) => {
     el.style.setProperty('border-left', '3px solid #888888', 'important')
     el.style.setProperty('color', '#000000', 'important')
   })
 
-  // Убираем подсветку highlight.js (тёмная тема) — перекрасим токены
-  // в контрастные цвета поверх белого фона.
   const tokenColors: Record<string, string> = {
     'hljs-keyword': '#7c3aed',
     'hljs-string': '#0a7d32',
@@ -88,10 +92,46 @@ function cloneForPrint(source: HTMLElement): { clone: HTMLElement; cleanup: () =
   }
 }
 
-/**
- * Рендерит произвольный DOM-узел в PDF (A4, многостраничный).
- * Текст печатается чёрным на белом, независимо от темы приложения.
- */
+// ---------------------------------------------------------------------------
+// Рендер одного блока в canvas
+// ---------------------------------------------------------------------------
+async function renderBlock(el: HTMLElement): Promise<HTMLCanvasElement> {
+  return html2canvas(el, {
+    scale: 2,
+    useCORS: true,
+    backgroundColor: '#ffffff',
+    logging: false,
+  })
+}
+
+
+function drawPageNumbers(pdf: jsPDF): void {
+  const pageCount = pdf.getNumberOfPages()
+  const pageWidth = pdf.internal.pageSize.getWidth()
+  const pageHeight = pdf.internal.pageSize.getHeight()
+
+  pdf.setFont('helvetica', 'normal')
+  pdf.setFontSize(PAGE_NUMBER_FONT_SIZE)
+  pdf.setTextColor(
+    PAGE_NUMBER_COLOR[0],
+    PAGE_NUMBER_COLOR[1],
+    PAGE_NUMBER_COLOR[2],
+  )
+
+  for (let i = 1; i <= pageCount; i++) {
+    pdf.setPage(i)
+    const label = `${i} / ${pageCount}`
+    pdf.text(label, pageWidth / 2, pageHeight - PAGE_NUMBER_OFFSET_FROM_BOTTOM, {
+      align: 'center',
+    })
+  }
+
+  pdf.setTextColor(0, 0, 0)
+}
+
+// ---------------------------------------------------------------------------
+// Публичный API: экспорт произвольного DOM-узла в PDF (A4, многостраничный)
+// ---------------------------------------------------------------------------
 export async function exportElementToPdf(
   el: HTMLElement,
   filename: string,
@@ -99,50 +139,117 @@ export async function exportElementToPdf(
   const { clone, cleanup } = cloneForPrint(el)
 
   try {
-    const canvas = await html2canvas(clone, {
-      scale: 2,
-      useCORS: true,
-      backgroundColor: '#ffffff',
-      logging: false,
-      // Явно просим html2canvas не тащить тёмные CSS-переменные —
-      // backgroundColor уже перекрывает, но подстрахуемся.
-      windowWidth: clone.scrollWidth,
-      windowHeight: clone.scrollHeight,
+    const pdf = new jsPDF({
+      unit: 'pt',
+      format: 'a4',
+      orientation: 'portrait',
     })
 
-    const imgData = canvas.toDataURL('image/png')
-
-    const pdf = new jsPDF({ unit: 'pt', format: 'a4', orientation: 'portrait' })
     const pageWidth = pdf.internal.pageSize.getWidth()
     const pageHeight = pdf.internal.pageSize.getHeight()
-    const margin = 28
+    const contentWidth = pageWidth - PAGE_MARGIN_SIDE * 2
+    const usableHeight = pageHeight - PAGE_MARGIN_TOP - PAGE_MARGIN_BOTTOM
 
-    const imgWidth = pageWidth - margin * 2
-    const imgHeight = (canvas.height * imgWidth) / canvas.width
-    const pageContentHeight = pageHeight - margin * 2
+    const contentRoot: HTMLElement =
+      (clone.querySelector('.md') as HTMLElement | null) ?? clone
 
-    let heightLeft = imgHeight
-    let yOffset = 0
+    const blocks = Array.from(contentRoot.children).filter(
+      (n): n is HTMLElement => n instanceof HTMLElement,
+    )
 
-    pdf.addImage(imgData, 'PNG', margin, margin - yOffset, imgWidth, imgHeight)
-    heightLeft -= pageContentHeight
-
-    while (heightLeft > 0) {
-      yOffset += pageContentHeight
-      pdf.addPage()
-      pdf.addImage(imgData, 'PNG', margin, margin - yOffset, imgWidth, imgHeight)
-      heightLeft -= pageContentHeight
+    // --- Fallback: нет верхнеуровневых блоков — рендерим одним куском ---
+    if (blocks.length === 0) {
+      const canvas = await renderBlock(clone)
+      const imgData = canvas.toDataURL('image/png')
+      const ratio = contentWidth / canvas.width
+      const imgHeight = canvas.height * ratio
+      pdf.addImage(
+        imgData,
+        'PNG',
+        PAGE_MARGIN_SIDE,
+        PAGE_MARGIN_TOP,
+        contentWidth,
+        imgHeight,
+      )
+      drawPageNumbers(pdf)
+      pdf.save(filename)
+      return
     }
 
+    let y = PAGE_MARGIN_TOP
+    let firstPageUsed = false
+
+    for (const block of blocks) {
+      const rect = block.getBoundingClientRect()
+      if (rect.height < 1) continue
+
+      const canvas = await renderBlock(block)
+      const imgData = canvas.toDataURL('image/png')
+      const ratio = contentWidth / canvas.width
+      const imgHeight = canvas.height * ratio
+
+      // --- Случай 1: блок выше целой страницы ---
+      if (imgHeight > usableHeight) {
+        if (firstPageUsed && y > PAGE_MARGIN_TOP) {
+          pdf.addPage()
+          y = PAGE_MARGIN_TOP
+          firstPageUsed = false
+        }
+
+        let remaining = imgHeight
+        let offset = 0
+
+        while (remaining > 0) {
+          pdf.addImage(
+            imgData,
+            'PNG',
+            PAGE_MARGIN_SIDE,
+            PAGE_MARGIN_TOP - offset,
+            contentWidth,
+            imgHeight,
+          )
+          remaining -= usableHeight
+          offset += usableHeight
+
+          if (remaining > 0) {
+            pdf.addPage()
+          }
+        }
+
+        pdf.addPage()
+        y = PAGE_MARGIN_TOP
+        firstPageUsed = false
+        continue
+      }
+
+      // --- Случай 2: блок не влезает в оставшееся место ---
+      if (firstPageUsed && y + imgHeight > pageHeight - PAGE_MARGIN_BOTTOM) {
+        pdf.addPage()
+        y = PAGE_MARGIN_TOP
+        firstPageUsed = false
+      }
+
+      // --- Случай 3: кладём блок целиком ---
+      pdf.addImage(imgData, 'PNG', PAGE_MARGIN_SIDE, y, contentWidth, imgHeight)
+      y += imgHeight + BLOCK_GAP
+      firstPageUsed = true
+    }
+
+    drawPageNumbers(pdf)
     pdf.save(filename)
   } finally {
     cleanup()
   }
 }
 
+// ---------------------------------------------------------------------------
+// Имя файла с таймстампом
+// ---------------------------------------------------------------------------
 export function buildPdfFilename(prefix = 'message'): string {
   const d = new Date()
   const pad = (n: number) => String(n).padStart(2, '0')
-  const ts = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`
+  const ts =
+    `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}` +
+    `_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`
   return `${prefix}_${ts}.pdf`
 }

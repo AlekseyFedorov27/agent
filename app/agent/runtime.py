@@ -24,28 +24,10 @@ def _content_to_str(content: Any) -> str:
     return str(content)
 
 
-def _ensure_markdown(text: str) -> str:
-    """
-    Мягкая страховка: если модель вернула plain text, разбиваем его
-    на абзацы, чтобы markdown-it сделал <p>, а не склеил в одну строку.
-    Уже размеченный текст не трогаем.
-    """
-    if not text or not text.strip():
-        return text
-    if re.search(r"(^#{1,6} |\*\*.+?\*\*|```|^\s*[-*] |^\s*\d+\. )", text, re.M):
-        return text
-    paragraphs = [p.strip() for p in text.split("\n") if p.strip()]
-    return "\n\n".join(paragraphs)
-
-
 def _message_to_dict(m: Any) -> dict:
     msg_type = getattr(m, "type", m.__class__.__name__.lower())
     content = _content_to_str(getattr(m, "content", ""))
     tool_calls = getattr(m, "tool_calls", None) or None
-
-    # К ai-сообщениям без tool_calls применяем markdown-страховку
-    if msg_type == "ai" and not tool_calls and content:
-        content = _ensure_markdown(content)
 
     return {
         "type": msg_type,
