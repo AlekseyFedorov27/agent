@@ -2,11 +2,11 @@ import uuid
 from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
-
+from app.auth.schemas import Password
 
 class AdminUserCreate(BaseModel):
     email: EmailStr
-    password: str = Field(min_length=8, max_length=128)
+    password: Password
     name: str = Field(min_length=1, max_length=120)
     position: str | None = Field(default=None, max_length=120)
     system_prompt: str | None = Field(default=None, max_length=8000)
@@ -20,7 +20,7 @@ class AdminUserUpdate(BaseModel):
     system_prompt: str | None = Field(default=None, max_length=8000)
     is_active: bool | None = None
     is_superuser: bool | None = None
-    password: str | None = Field(default=None, min_length=8, max_length=128)
+    password: Password | None = None
 
 
 class AdminUserOut(BaseModel):

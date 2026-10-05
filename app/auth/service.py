@@ -20,7 +20,7 @@ async def register_user(
     email: str,
     password: str,
     *,
-    name: str,
+    name: str | None = None,
     position: str | None = None,
 ) -> User:
     email = email.lower()
@@ -28,9 +28,13 @@ async def register_user(
     if existing is not None:
         raise ConflictError("User with this email already exists")
 
+    # Fallback совпадает с логикой миграции 3fa0a183de45:
+    # name = local-part email, если явное имя не передали.
+    resolved_name = (name.strip() if name else "") or email.split("@", 1)[0]
+
     user = User(
         email=email,
-        name=name.strip(),
+        name=resolved_name,
         position=(position.strip() if position else None),
         hashed_password=hash_password(password),
     )

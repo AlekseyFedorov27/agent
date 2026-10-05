@@ -145,8 +145,8 @@ const isSelf = (u: UserPublic) => u.id === auth.user?.id
     <UserModal
       :open="modalOpen"
       :user="editing"
+      :save-fn="onSave"
       @close="modalOpen = false"
-      @save="onSave"
     />
 
     <ConfirmModal

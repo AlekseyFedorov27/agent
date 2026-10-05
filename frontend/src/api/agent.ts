@@ -1,4 +1,4 @@
-import { ACCESS_KEY, http } from './client'
+import { ACCESS_KEY, forceLogout, http, refreshTokens } from './client'
 
 export interface ToolCall {
   id?: string
@@ -40,14 +40,13 @@ export interface ApprovalOut {
   decided_at: string | null
 }
 
-
 export interface RunOut {
   id: string
   thread_id: string
   status: string
   input: { [key: string]: any }
   created_at: string
-  completed_at: string | null   // бэк отдаёт datetime | None
+  completed_at: string | null
 }
 
 export type StreamEvent =
@@ -59,8 +58,6 @@ export type StreamEvent =
   | { type: 'completed'; data: { thread_id: string; messages: MessageOut[] } }
   | { type: 'error'; data: { detail: string; type: string } }
 
-
-
 const BASE_URL = import.meta.env.VITE_API_BASE || '/api'
 
 export async function streamAgent(
@@ -69,16 +66,29 @@ export async function streamAgent(
   onEvent: (evt: StreamEvent) => void,
   signal?: AbortSignal,
 ): Promise<void> {
-  const token = localStorage.getItem(ACCESS_KEY)
-  const res = await fetch(`${BASE_URL}/agent/stream`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    body: JSON.stringify({ message, thread_id: threadId }),
-    signal,
-  })
+  const doFetch = (token: string | null) =>
+    fetch(`${BASE_URL}/agent/stream`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ message, thread_id: threadId }),
+      signal,
+    })
+
+  let res = await doFetch(localStorage.getItem(ACCESS_KEY))
+
+  // access-токен истёк — обновляем и повторяем запрос один раз
+  if (res.status === 401) {
+    const fresh = await refreshTokens()
+    if (!fresh) {
+      forceLogout()
+      throw new Error('Сессия истекла')
+    }
+    res = await doFetch(fresh)
+  }
+
   if (!res.ok || !res.body) {
     const text = await res.text().catch(() => '')
     throw new Error(`HTTP ${res.status}: ${text || res.statusText}`)
@@ -112,7 +122,7 @@ export async function streamAgent(
       }
     }
   }
-}  
+}
 
 export const agentApi = {
   async run(message: string, threadId?: string): Promise<RunResponse> {
