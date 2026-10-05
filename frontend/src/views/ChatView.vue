@@ -170,6 +170,7 @@ const suggestions = [
 
       <main ref="listEl" class="chat-list">
         <div v-if="!items.length && !loading" class="empty">
+          <img src="@/assets/ai-asistent.png">
           <h2>Начните диалог</h2>
           <p class="muted">
             Агент умеет считать и спрашивает разрешение перед вызовом инструмента.

@@ -107,7 +107,7 @@ input:focus, textarea:focus { border-color: var(--accent); }
 .auth-card h1 { margin: 0; font-size: 22px; display: flex; justify-content: center; }
 .auth-card-subtitle {display: flex; justify-content: center; margin: 0;}
 .auth-card label {
-  display: flex; flex-direction: column; gap: 6px;
+  display: flex; flex-direction: column; gap: 1px;
   font-size: 13px; color: var(--muted);
 }
 .auth-card .switch { margin: 0; text-align: center; font-size: 14px; color: var(--muted); }
@@ -138,11 +138,13 @@ input:focus, textarea:focus { border-color: var(--accent); }
   /* background: var(--bg-elev); */
   background-color: transparent;
 }
-.chat-header .brand { display: flex; gap: 12px; align-items: center; }
-.chat-header .logo { font-size: 26px; }
+.chat-header .brand { display: flex; gap: 12px; align-items: center; user-select: none;}
+.chat-header .logo { font-size: 26px; pointer-events: none; user-select: none;}
 .chat-header .title { font-weight: 600; }
 .chat-header .sub { font-size: 12px; }
 .chat-header .actions { display: flex; gap: 8px; }
+
+img {pointer-events: none; user-select: none;}
 
 .chat-list {
   overflow-y: auto;
@@ -446,11 +448,20 @@ input:focus, textarea:focus { border-color: var(--accent); }
 .md table {
   border-collapse: collapse;
   margin: 8px 0;
+  width: 100%; 
 }
 .md th, .md td {
   border: 1px solid var(--border);
-  padding: 6px 10px;
+  padding: 8px 12px;
+  padding: 8px 12px;
+  text-align: left;
 }
+
+.md th {
+  background: var(--bg-elev-2);
+  font-weight: 600;
+}
+
 .md blockquote {
   border-left: 3px solid var(--accent);
   margin: 8px 0;
