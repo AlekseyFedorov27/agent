@@ -3,6 +3,7 @@
   --bg-elev: #171a21;
   --bg-elev-2: #1e222b;
   --border: #2a2f3a;
+  --border-hover: #434958;
   --text: #e6e8ee;
   --muted: #8b93a7;
   --accent: #6366f1;
@@ -359,6 +360,60 @@ input:focus, textarea:focus { border-color: var(--accent); }
 .pdf-target {
   /* Чтобы в PDF был белый фон */
   background: transparent;
+}
+
+
+
+/* контейнер для иконок в шапке сообщения */
+.msg-tools {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+}
+
+/* универсальная иконочная кнопка */
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--muted);
+  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+}
+.icon-btn:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--border-hover);
+  background: var(--bg-elev-2);
+}
+.icon-btn:active:not(:disabled) {
+  transform: translateY(1px);
+}
+.icon-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* «успех» после копирования */
+.icon-btn.is-ok {
+  color: var(--ok);
+  border-color: rgba(34, 197, 94, 0.5);
+}
+.icon-btn.is-ok:hover {
+  color: var(--ok);
+  border-color: var(--ok);
+}
+
+/* крутилка для PDF-загрузки */
+.icon-btn .spin {
+  animation: spin 0.9s linear infinite;
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
 }
 
 /* Markdown внутри сообщений */
