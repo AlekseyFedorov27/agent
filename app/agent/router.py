@@ -16,6 +16,7 @@ from app.agent.runtime import (
 from app.agent.schemas import RunRequest, RunResponse, ThreadStatusResponse
 from app.auth.dependencies import CurrentUser
 from app.core.database import get_db, get_session_factory
+from app.core.telemetry import enrich_current_span
 from app.hitl import service as hitl_service
 from app.runs import service as runs_service
 from app.runs.models import EventType, RunStatus
@@ -72,6 +73,14 @@ async def run_agent(
         user_id=user.id,
         thread_id=thread_id,
         input_payload={"message": data.message},
+    )
+
+    # Обогащаем текущий HTTP-спан бизнес-атрибутами,
+    # чтобы в Jaeger можно было фильтровать по user_id / thread_id / run_id.
+    enrich_current_span(
+        user_id=user.id,
+        thread_id=thread_id,
+        run_id=run.id,
     )
 
     try:
@@ -152,6 +161,16 @@ async def stream_agent(
                 thread_id=thread_id,
                 input_payload={"message": message},
             )
+
+            # Обогащаем спан. Атрибуты появятся в Jaeger, если версия
+            # instrumentation-fastapi поддерживает enrichment стриминговых
+            # ответов. Для /agent/run работает гарантированно.
+            enrich_current_span(
+                user_id=user_id,
+                thread_id=thread_id,
+                run_id=run.id,
+            )
+
             # True — как только итоговый статус run записан в БД.
             # Если генератор прервали раньше (клиент отключился),
             # finally пометит run как failed.
@@ -162,7 +181,7 @@ async def stream_agent(
                     "run_id": str(run.id),
                     "thread_id": thread_id,
                 })
-            
+
                 async for evt in runtime.stream_events(
                     thread_id, message,
                     user_name=user_name,
