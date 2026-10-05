@@ -4,6 +4,7 @@ from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.hitl.models import Approval
 from app.runs.models import Event, Run, RunStatus
+from app.core.exceptions import NotFoundError
 
 
 async def create_run(
@@ -105,3 +106,26 @@ async def delete_thread(
     )
     await session.commit()
     return result.rowcount or 0
+
+
+async def assert_thread_owner(
+    session: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    thread_id: str,
+) -> None:
+    """
+    Проверяет, что thread_id принадлежит пользователю user_id.
+
+    Защита от IDOR: клиент не должен читать/продолжать чужой диалог,
+    даже зная thread_id. Бросаем NotFoundError (404), а не Forbidden (403) —
+    чтобы не подтверждать существование чужого треда.
+    """
+    stmt = (
+        select(Run.id)
+        .where(Run.thread_id == thread_id, Run.user_id == user_id)
+        .limit(1)
+    )
+    exists = await session.scalar(stmt)
+    if exists is None:
+        raise NotFoundError("Thread not found")

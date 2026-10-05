@@ -42,6 +42,11 @@ async def run_agent(
 ) -> RunResponse:
     thread_id = data.thread_id or str(uuid.uuid4())
 
+    if data.thread_id:
+        await runs_service.assert_thread_owner(
+            session, user_id=user.id, thread_id=thread_id
+        )
+
     run = await runs_service.create_run(
         session,
         user_id=user.id,
@@ -100,8 +105,14 @@ async def stream_agent(
     user_id = user.id
     message = data.message
 
+    if data.thread_id:
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            await runs_service.assert_thread_owner(
+                session, user_id=user_id, thread_id=thread_id
+            )
+
     async def event_generator():
-        # Отдельная сессия: request-scoped закроется до окончания стрима.
         session_factory = get_session_factory()
         async with session_factory() as session:
             run = await runs_service.create_run(
@@ -110,24 +121,29 @@ async def stream_agent(
                 thread_id=thread_id,
                 input_payload={"message": message},
             )
-
             yield _sse("run_started", {
                 "run_id": str(run.id),
                 "thread_id": thread_id,
             })
 
-            async def on_event(event_type: str, payload: dict) -> None:
-                await runs_service.add_event(
-                    session, run_id=run.id, type=event_type, payload=payload
-                )
-
             try:
-                await runtime.stream_run(
+                async for evt in runtime.stream_events(
                     thread_id, message,
-                    on_event=on_event,
                     user_name=user.name,
                     system_prompt=user.system_prompt or "",
-                )
+                ):
+                    if evt["type"] == "token":
+                        # Токены не пишем в БД — их слишком много.
+                        yield _sse("token", evt["data"])
+                    elif evt["type"] == "node":
+                        event_type = evt["data"]["event_type"]
+                        payload = evt["data"]["payload"]
+                        await runs_service.add_event(
+                            session, run_id=run.id,
+                            type=event_type, payload=payload,
+                        )
+                        yield _sse("node", payload)
+
                 state = await runtime.get_state(thread_id)
                 next_nodes = list(state.next) if state.next else []
 
@@ -174,7 +190,7 @@ async def stream_agent(
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",  # для nginx
+            "X-Accel-Buffering": "no",
         },
     )
 
@@ -187,8 +203,14 @@ async def stream_agent(
 async def get_thread_status(
     thread_id: str,
     user: CurrentUser,
+    session: DbSession,  
     runtime: Runtime,
 ) -> ThreadStatusResponse:
+
+    await runs_service.assert_thread_owner(
+        session, user_id=user.id, thread_id=thread_id
+    )
+    
     state = await runtime.get_state(thread_id)
     messages = state.values.get("messages", []) if state.values else []
     return ThreadStatusResponse(

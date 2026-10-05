@@ -1,8 +1,8 @@
 """add name, position, system_prompt to users
 
-Revision ID: <auto>
+Revision ID: 3fa0a183de45
 Revises: af6ed682704d
-Create Date: <auto>
+Create Date: 2026-10-03 13:12:00.000000
 """
 from typing import Sequence, Union
 
@@ -10,7 +10,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision: str = '<auto>'          # ← не трогайте, оставьте как сгенерировалось
+revision: str = '3fa0a183de45'         
 down_revision: Union[str, Sequence[str], None] = 'af6ed682704d'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None

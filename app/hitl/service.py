@@ -14,7 +14,8 @@ async def create_pending(
     user_id: uuid.UUID,
     thread_id: str,
     interrupt_id: str | None,
-    payload: dict,
+    payload: dict[str, str],
+    run_id: uuid.UUID | None = None,
 ) -> Approval:
     approval = Approval(
         user_id=user_id,
@@ -22,6 +23,7 @@ async def create_pending(
         interrupt_id=interrupt_id,
         status=ApprovalStatus.PENDING,
         payload=payload,
+        run_id=run_id,
     )
     session.add(approval)
     await session.commit()
@@ -70,55 +72,25 @@ async def decide(
     return approval
 
 
-async def sync_pending_interrupts(
-    session: AsyncSession,
-    runtime,
-    *,
-    thread_id: str,
-    user_id: uuid.UUID,
-) -> uuid.UUID | None:
-    """
-    Проверяет state треда. Если есть активные interrupt'ы — создаёт
-    Approval для каждого. Возвращает id последнего созданного Approval.
-    """
-    state = await runtime.get_state(thread_id)
-    if not state.next:
-        return None
-
-    last_id: uuid.UUID | None = None
-    for intr in runtime.get_pending_interrupts(state):
-        approval = await create_pending(
-            session,
-            user_id=user_id,
-            thread_id=thread_id,
-            interrupt_id=intr.get("id"),
-            payload=intr.get("value") or {},
-        )
-        last_id = approval.id
-    return last_id
-
-
-async def create_pending(
+async def _get_pending_by_interrupt(
     session: AsyncSession,
     *,
-    user_id: uuid.UUID,
     thread_id: str,
     interrupt_id: str | None,
-    payload: dict[str, str],
-    run_id: uuid.UUID | None = None,
-) -> Approval:
-    approval = Approval(
-        user_id=user_id,
-        thread_id=thread_id,
-        interrupt_id=interrupt_id,
-        status=ApprovalStatus.PENDING,
-        payload=payload,
-        run_id=run_id,
+) -> Approval | None:
+    if interrupt_id is None:
+        return None
+    stmt = (
+        select(Approval)
+        .where(
+            Approval.thread_id == thread_id,
+            Approval.interrupt_id == interrupt_id,
+            Approval.status == ApprovalStatus.PENDING,
+        )
+        .limit(1)
     )
-    session.add(approval)
-    await session.commit()
-    await session.refresh(approval)
-    return approval
+    result = await session.execute(stmt)
+    return result.scalar_one_or_none()
 
 
 async def sync_pending_interrupts(
@@ -135,13 +107,35 @@ async def sync_pending_interrupts(
 
     last_id: uuid.UUID | None = None
     for intr in runtime.get_pending_interrupts(state):
+        intr_id = intr.get("id")
+
+        # Дедуп: если для этого interrupt_id уже есть pending — используем его
+        existing = await _get_pending_by_interrupt(
+            session, thread_id=thread_id, interrupt_id=intr_id,
+        )
+        if existing is not None:
+            last_id = existing.id
+            continue
+
         approval = await create_pending(
             session,
             user_id=user_id,
             thread_id=thread_id,
-            interrupt_id=intr.get("id"),
+            interrupt_id=intr_id,
             payload=intr.get("value") or {},
             run_id=run_id,
         )
         last_id = approval.id
     return last_id
+
+
+async def revert_decision(
+    session: AsyncSession, approval: Approval
+) -> Approval:
+    """Откат решения — используется, если resume упал."""
+    approval.status = ApprovalStatus.PENDING
+    approval.decided_at = None
+    approval.comment = None
+    await session.commit()
+    await session.refresh(approval)
+    return approval
