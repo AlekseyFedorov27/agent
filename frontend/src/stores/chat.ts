@@ -186,6 +186,9 @@ export const useChatStore = defineStore('chat', () => {
     const { humanUid } = started
 
     const aiUid = uid()
+    // ВАЖНО: держим ссылку именно на Proxy-элемент из items.value,
+    // а не на сырой объект — иначе мутации .content не триггерят
+    // реактивность, и текст «прилипает» к первому токену.
     let streamingItem: ChatItem | null = null
 
     try {
@@ -194,30 +197,35 @@ export const useChatStore = defineStore('chat', () => {
         threadId.value ?? null,
         (evt: StreamEvent) => {
           switch (evt.type) {
-            case 'run_started':
+            case 'run_started': {
               threadId.value = evt.data.thread_id
               _persistThread(evt.data.thread_id)
               break
+            }
 
             case 'token': {
               if (!streamingItem) {
-                streamingItem = {
+                items.value.push({
                   uid: aiUid,
                   type: 'ai',
                   content: '',
                   tool_calls: null,
-                }
-                items.value.push(streamingItem)
+                })
+                // берём из массива — теперь это Proxy, и мутации
+                // .content триггерят ререндер Vue.
+                streamingItem = items.value[items.value.length - 1]
               }
               streamingItem.content += evt.data.content
               break
             }
 
-            case 'error':
+            case 'error': {
               error.value = evt.data.detail
               break
+            }
 
-            // interrupt / interrupted / completed обработаем после закрытия стрима
+            // interrupt / interrupted / completed обработаем
+            // после закрытия стрима — перечитаем состояние с бэка.
           }
         },
       )
