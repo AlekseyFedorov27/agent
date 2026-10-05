@@ -55,17 +55,30 @@ async def decide_approval(
         session, approval, approved=data.approved, comment=data.comment
     )
 
-    result = await runtime.resume_run(
-        approval.thread_id,
-        {"approved": data.approved, "comment": data.comment},
-    )
+    run_id = approval.run_id
+
+    try:
+        result = await runtime.resume_run(
+            approval.thread_id,
+            {"approved": data.approved, "comment": data.comment},
+        )
+    except Exception as e:
+        # Откатываем решение, чтобы пользователь мог попробовать снова.
+        await service.revert_decision(session, approval)
+        if run_id is not None:
+            run = await runs_service.get_run(session, run_id)
+            if run is not None:
+                await runs_service.update_status(session, run, RunStatus.FAILED)
+                await runs_service.add_event(
+                    session, run_id=run_id, type=EventType.ERROR,
+                    payload={"error": str(e), "type": type(e).__name__},
+                )
+        raise
 
     state = await runtime.get_state(approval.thread_id)
     next_nodes = list(state.next) if state.next else []
     messages = result.get("messages", [])
 
-    # Синхронизируем связанный Run, если он есть
-    run_id = approval.run_id
     if run_id is not None:
         run = await runs_service.get_run(session, run_id)
         if run is not None:

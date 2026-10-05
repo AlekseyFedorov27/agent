@@ -28,24 +28,6 @@ TOOLS = [calculator]
 tool_node = ToolNode(TOOLS)
 
 
-def _ensure_markdown(text: str) -> str:
-    """
-    Мягкая страховка: если модель вернула plain text, разбиваем его
-    на абзацы, чтобы markdown-it сделал <p>, а не склеил в одну строку.
-    Уже размеченный текст не трогаем.
-    """
-    if not text or not text.strip():
-        return text
-
-    import re
-    # Уже есть Markdown? — не трогаем
-    if re.search(r"(^#{1,6} |\*\*.+?\*\*|```|^\s*[-*] |^\s*\d+\. )", text, re.M):
-        return text
-
-    paragraphs = [p.strip() for p in text.split("\n") if p.strip()]
-    return "\n\n".join(paragraphs)
-
-
 def _compose_system_prompt(user_name: str, user_prompt: str) -> str:
     parts: list[str] = [BASE_SYSTEM_PROMPT]
 
@@ -65,7 +47,7 @@ def _compose_system_prompt(user_name: str, user_prompt: str) -> str:
     return "\n\n".join(parts)
 
 
-def llm_node(state: AgentState) -> dict:
+async def llm_node(state: AgentState) -> dict:
     llm = get_llm().bind_tools(TOOLS)
     messages = state["messages"]
 
@@ -73,16 +55,12 @@ def llm_node(state: AgentState) -> dict:
     user_prompt = state.get("system_prompt") or ""
     system_text = _compose_system_prompt(user_name, user_prompt)
 
-    # Всегда пересобираем системное сообщение — оно зависит от пользователя
     if not messages or not isinstance(messages[0], SystemMessage):
         messages = [SystemMessage(content=system_text), *messages]
     else:
         messages = [SystemMessage(content=system_text), *messages[1:]]
 
-    response = llm.invoke(messages)
-
-    if not getattr(response, "tool_calls", None) and response.content:
-        response.content = _ensure_markdown(response.content)
+    response = await llm.ainvoke(messages)
 
     return {"messages": [response]}
 

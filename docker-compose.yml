@@ -3,15 +3,15 @@ services:
     image: postgres:16-alpine
     container_name: agent_postgres
     environment:
-      POSTGRES_USER: agent
-      POSTGRES_PASSWORD: agent
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
       POSTGRES_DB: agent_db
     ports:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U agent -d agent_db"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d agent_db"]
       interval: 5s
       timeout: 3s
       retries: 5

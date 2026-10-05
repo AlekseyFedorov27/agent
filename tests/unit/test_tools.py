@@ -2,7 +2,7 @@
 
 import pytest
 
-from app.agent.tools import _eval_node, calculator
+from app.agent.tools import calculator
 
 
 # ===========================================================================

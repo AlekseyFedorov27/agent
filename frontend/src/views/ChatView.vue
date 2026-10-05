@@ -61,7 +61,7 @@ async function send() {
   const text = draft.value
   if (!text.trim() || !canSend.value) return
   draft.value = ''
-  await chat.send(text)
+  await chat.sendStream(text)
 }
 
 function onKeydown(e: KeyboardEvent) {

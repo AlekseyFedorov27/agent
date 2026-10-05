@@ -45,11 +45,13 @@ def upgrade() -> None:
     sa.PrimaryKeyConstraint('id')
     )
     op.create_index(op.f('ix_events_created_at'), 'events', ['created_at'], unique=False)
-    op.create_index(op.f('ix_events_run_id'), 'events', ['run_id'], unique=False)
-    op.create_index(op.f('ix_events_type'), 'events', ['type'], unique=False)
     op.add_column('approvals', sa.Column('run_id', sa.UUID(), nullable=True))
     op.create_index(op.f('ix_approvals_run_id'), 'approvals', ['run_id'], unique=False)
-    op.create_foreign_key(None, 'approvals', 'runs', ['run_id'], ['id'], ondelete='SET NULL')
+    op.create_foreign_key(
+        'fk_approvals_run_id_runs',
+        'approvals', 'runs', ['run_id'], ['id'],
+        ondelete='SET NULL',
+    )
     # ### end Alembic commands ###
 
 
@@ -59,7 +61,9 @@ def downgrade() -> None:
     # WARNING: constraint name is None; this directive will fail as
     # rendered.  Add a name, or use a naming convention; see
     # https://alembic.sqlalchemy.org/en/latest/naming.html
-    op.drop_constraint(None, 'approvals', type_='foreignkey')
+    op.drop_constraint(
+        'fk_approvals_run_id_runs', 'approvals', type_='foreignkey'
+    )
     op.drop_index(op.f('ix_approvals_run_id'), table_name='approvals')
     op.drop_column('approvals', 'run_id')
     op.drop_index(op.f('ix_events_type'), table_name='events')

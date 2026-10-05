@@ -2,9 +2,11 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import {
   agentApi,
+  streamAgent,
   type ApprovalOut,
   type MessageOut,
   type RunResponse,
+  type StreamEvent,
 } from '@/api/agent'
 import { extractApiError } from '@/api/client'
 
@@ -188,6 +190,57 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  async function sendStream(text: string) {
+    const trimmed = text.trim()
+    if (!trimmed || loading.value || pendingApproval.value) return
+
+    error.value = null
+    loading.value = true
+    items.value.push({ uid: uid(), type: 'human', content: trimmed, tool_calls: null })
+
+    const aiUid = uid()
+    let streaming = false
+
+    try {
+      await streamAgent(trimmed, threadId.value ?? null, (evt: StreamEvent) => {
+        switch (evt.type) {
+          case 'run_started':
+            threadId.value = evt.data.thread_id
+            _persistThread(evt.data.thread_id)
+            break
+          case 'token':
+            if (!streaming) {
+              items.value.push({ uid: aiUid, type: 'ai', content: '', tool_calls: null })
+              streaming = true
+            }
+            const target = items.value.find((m) => m.uid === aiUid)
+            if (target) target.content += evt.data.content
+            break
+          case 'error':
+            error.value = evt.data.detail
+            break
+          // interrupt/interrupted/completed обработаем после закрытия стрима
+        }
+      })
+
+      // После закрытия стрима — актуализируем состояние с бэка.
+      if (threadId.value) {
+        const status = await agentApi.getThreadStatus(threadId.value)
+        _ingestMessages(status.messages)
+        await _refreshPendingFor(threadId.value)
+      }
+      await loadThreads()
+    } catch (e) {
+      error.value = extractApiError(e)
+      items.value = items.value.filter(
+        (m) =>
+          !(m.type === 'human' && m.content === trimmed) && m.uid !== aiUid,
+      )
+    } finally {
+      loading.value = false
+    }
+  }
+
   // --- Новый чат / сброс -------------------------------------------------
   function newChat() {
     items.value = []
@@ -209,6 +262,13 @@ export const useChatStore = defineStore('chat', () => {
     // getters
     canSend, lastAssistantMessage,
     // actions
-    send, decide, loadThreads, loadThread, newChat, reset, deleteThread
+    send, 
+    decide, 
+    loadThreads, 
+    loadThread, 
+    newChat, 
+    reset, 
+    deleteThread, 
+    sendStream
   }
 })

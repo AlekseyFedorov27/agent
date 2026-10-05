@@ -1,4 +1,4 @@
-import { http } from './client'
+import { ACCESS_KEY, http } from './client'
 
 export interface ToolCall {
   id?: string
@@ -21,10 +21,10 @@ export interface RunResponse {
   pending_approval_id: string | null
 }
 
-export interface ThreadStatusResponse{
-        thread_id: string
-        next_nodes: string,
-        messages: string,
+export interface ThreadStatusResponse {
+  thread_id: string
+  next_nodes: string[]
+  messages: MessageOut[]
 }
 
 export interface ApprovalOut {
@@ -41,14 +41,78 @@ export interface ApprovalOut {
 }
 
 
-export interface RunOut{
-    id: string
-    thread_id: string
-    status: string
-    input: { [key: string]: any }
-    created_at: string
-    completed_at: string
+export interface RunOut {
+  id: string
+  thread_id: string
+  status: string
+  input: { [key: string]: any }
+  created_at: string
+  completed_at: string | null   // бэк отдаёт datetime | None
 }
+
+export type StreamEvent =
+  | { type: 'run_started'; data: { run_id: string; thread_id: string } }
+  | { type: 'token'; data: { content: string } }
+  | { type: 'node'; data: { node: string; messages: MessageOut[] } }
+  | { type: 'interrupt'; data: Record<string, any> }
+  | { type: 'interrupted'; data: { thread_id: string; pending_approval_id: string | null } }
+  | { type: 'completed'; data: { thread_id: string; messages: MessageOut[] } }
+  | { type: 'error'; data: { detail: string; type: string } }
+
+
+
+const BASE_URL = import.meta.env.VITE_API_BASE || '/api'
+
+export async function streamAgent(
+  message: string,
+  threadId: string | null,
+  onEvent: (evt: StreamEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const token = localStorage.getItem(ACCESS_KEY)
+  const res = await fetch(`${BASE_URL}/agent/stream`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify({ message, thread_id: threadId }),
+    signal,
+  })
+  if (!res.ok || !res.body) {
+    const text = await res.text().catch(() => '')
+    throw new Error(`HTTP ${res.status}: ${text || res.statusText}`)
+  }
+
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+
+    let sep: number
+    while ((sep = buffer.indexOf('\n\n')) !== -1) {
+      const raw = buffer.slice(0, sep)
+      buffer = buffer.slice(sep + 2)
+
+      let event = 'message'
+      let data = ''
+      for (const line of raw.split('\n')) {
+        if (line.startsWith('event: ')) event = line.slice(7)
+        else if (line.startsWith('data: ')) data = line.slice(6)
+      }
+      if (!data) continue
+      try {
+        onEvent({ type: event, data: JSON.parse(data) } as StreamEvent)
+      } catch (e) {
+        console.error('SSE parse error', event, data, e)
+      }
+    }
+  }
+}  
 
 export const agentApi = {
   async run(message: string, threadId?: string): Promise<RunResponse> {

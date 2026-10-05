@@ -1,3 +1,5 @@
+import re
+from collections.abc import AsyncIterator
 from typing import Any, Awaitable, Callable
 
 from langchain_core.messages import HumanMessage
@@ -22,11 +24,33 @@ def _content_to_str(content: Any) -> str:
     return str(content)
 
 
+def _ensure_markdown(text: str) -> str:
+    """
+    Мягкая страховка: если модель вернула plain text, разбиваем его
+    на абзацы, чтобы markdown-it сделал <p>, а не склеил в одну строку.
+    Уже размеченный текст не трогаем.
+    """
+    if not text or not text.strip():
+        return text
+    if re.search(r"(^#{1,6} |\*\*.+?\*\*|```|^\s*[-*] |^\s*\d+\. )", text, re.M):
+        return text
+    paragraphs = [p.strip() for p in text.split("\n") if p.strip()]
+    return "\n\n".join(paragraphs)
+
+
 def _message_to_dict(m: Any) -> dict:
+    msg_type = getattr(m, "type", m.__class__.__name__.lower())
+    content = _content_to_str(getattr(m, "content", ""))
+    tool_calls = getattr(m, "tool_calls", None) or None
+
+    # К ai-сообщениям без tool_calls применяем markdown-страховку
+    if msg_type == "ai" and not tool_calls and content:
+        content = _ensure_markdown(content)
+
     return {
-        "type": getattr(m, "type", m.__class__.__name__.lower()),
-        "content": _content_to_str(getattr(m, "content", "")),
-        "tool_calls": getattr(m, "tool_calls", None) or None,
+        "type": msg_type,
+        "content": content,
+        "tool_calls": tool_calls,
     }
 
 
@@ -111,45 +135,52 @@ class AgentRuntimeService:
 
     # --- Streaming --------------------------------------------------------- #
 
-    async def stream_run(
+    async def stream_events(
         self,
         thread_id: str,
         message: str,
         *,
-        on_event: EventHandler,
         user_name: str = "",
         system_prompt: str = "",
-    ) -> dict:
+    ) -> AsyncIterator[dict]:
         """
-        Запускает граф со стримингом.
-        on_event вызывается на каждый update от графа.
-        Возвращает финальный state.values.
+        Асинхронный генератор событий графа.
+
+        Yields:
+            {"type": "node", "data": {"event_type": str, "payload": dict}}
+            {"type": "token", "data": {"content": str}}
         """
-        async for chunk in self.graph.astream(
+        async for mode, chunk in self.graph.astream(
             {
                 "messages": [HumanMessage(content=message)],
                 "user_name": user_name,
                 "system_prompt": system_prompt,
             },
             config=self._config(thread_id),
-            stream_mode="updates",
+            stream_mode=["updates", "messages"],
         ):
-            # chunk = {node_name: node_output}
-            for node_name, node_output in chunk.items():
-                if not isinstance(node_output, dict):
-                    continue
-                messages = node_output.get("messages") or []
-                payload = {
-                    "node": node_name,
-                    "messages": [_message_to_dict(m) for m in messages],
-                }
-                if node_name == "llm":
-                    event_type = EventType.LLM_END
-                elif node_name == "tools":
-                    event_type = EventType.TOOL_END
-                else:
-                    event_type = EventType.NODE_UPDATE
-                await on_event(event_type, payload)
-
-        state = await self.get_state(thread_id)
-        return dict(state.values) if state.values else {}
+            if mode == "updates":
+                for node_name, node_output in chunk.items():
+                    if not isinstance(node_output, dict):
+                        continue
+                    messages = node_output.get("messages") or []
+                    payload = {
+                        "node": node_name,
+                        "messages": [_message_to_dict(m) for m in messages],
+                    }
+                    if node_name == "llm":
+                        event_type = EventType.LLM_END
+                    elif node_name == "tools":
+                        event_type = EventType.TOOL_END
+                    else:
+                        event_type = EventType.NODE_UPDATE
+                    yield {
+                        "type": "node",
+                        "data": {"event_type": event_type, "payload": payload},
+                    }
+            elif mode == "messages":
+                msg_chunk, meta = chunk
+                if meta.get("langgraph_node") == "llm":
+                    content = getattr(msg_chunk, "content", "")
+                    if content:
+                        yield {"type": "token", "data": {"content": str(content)}}    
