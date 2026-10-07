@@ -1,11 +1,11 @@
 import uuid
 from datetime import datetime, timezone
-from sqlalchemy import select, delete
+from sqlalchemy import select, delete, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.hitl.models import Approval
 from app.runs.models import Event, Run, RunStatus
 from app.core.exceptions import NotFoundError
-
+from app.auth.models import User
 
 async def create_run(
     session: AsyncSession,
@@ -129,3 +129,77 @@ async def assert_thread_owner(
     exists = await session.scalar(stmt)
     if exists is None:
         raise NotFoundError("Thread not found")
+
+
+async def list_all_runs(
+    session: AsyncSession,
+    *,
+    user_id: uuid.UUID | None = None,
+    status: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[tuple[Run, User]]:
+    """
+    Возвращает страницу runs вместе с владельцем.
+    Сортировка — новые сверху.
+    """
+    stmt = (
+        select(Run, User)
+        .join(User, User.id == Run.user_id)
+        .order_by(Run.created_at.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    if user_id is not None:
+        stmt = stmt.where(Run.user_id == user_id)
+    if status is not None:
+        stmt = stmt.where(Run.status == status)
+
+    result = await session.execute(stmt)
+    return list(result.all())
+
+
+async def count_all_runs(
+    session: AsyncSession,
+    *,
+    user_id: uuid.UUID | None = None,
+    status: str | None = None,
+) -> int:
+    stmt = select(func.count()).select_from(Run)
+    if user_id is not None:
+        stmt = stmt.where(Run.user_id == user_id)
+    if status is not None:
+        stmt = stmt.where(Run.status == status)
+    return int(await session.scalar(stmt) or 0)
+
+
+async def get_run_with_user(
+    session: AsyncSession,
+    run_id: uuid.UUID,
+) -> tuple[Run, User] | None:
+    stmt = (
+        select(Run, User)
+        .join(User, User.id == Run.user_id)
+        .where(Run.id == run_id)
+        .limit(1)
+    )
+    result = await session.execute(stmt)
+    return result.first()
+
+
+async def admin_delete_thread(
+    session: AsyncSession,
+    thread_id: str,
+) -> int:
+    """
+    Удаляет все runs (events каскадом) и связанные approvals для thread_id,
+    без привязки к конкретному user_id. Только для админа.
+    """
+    await session.execute(
+        delete(Approval).where(Approval.thread_id == thread_id)
+    )
+    result = await session.execute(
+        delete(Run).where(Run.thread_id == thread_id)
+    )
+    await session.commit()
+    return result.rowcount or 0

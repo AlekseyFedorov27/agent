@@ -2,7 +2,7 @@
 
 import pytest
 
-from app.agent.tools import calculator
+from app.tools.calculator import calculator
 
 
 # ===========================================================================

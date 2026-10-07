@@ -75,6 +75,8 @@ const isSelf = (u: UserPublic) => u.id === auth.user?.id
       </div>
 
       <div class="actions">
+        <button class="ghost-btn" @click="router.push('/admin')">Пользователи</button>
+        <button class="ghost-btn" @click="router.push('/admin/runs')">Runs</button>
         <button class="ghost-btn" @click="router.push('/chat')">К чату</button>
         <button class="ghost-btn" @click="auth.logout(); router.push('/login')">Выйти</button>
       </div>

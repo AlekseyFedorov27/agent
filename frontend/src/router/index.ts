@@ -15,6 +15,18 @@ const router = createRouter({
       meta: { requiresAuth: true, requiresAdmin: true },
     },
     {
+      path: '/admin/runs',
+      name: 'admin-runs',
+      component: () => import('@/views/AdminRunsView.vue'),
+      meta: { requiresAuth: true, requiresAdmin: true },
+    },
+    {
+      path: '/admin/runs/:runId',
+      name: 'admin-run-detail',
+      component: () => import('@/views/AdminRunDetailView.vue'),
+      meta: { requiresAuth: true, requiresAdmin: true },
+    },
+    {
       path: '/login',
       name: 'login',
       component: () => import('@/views/LoginView.vue'),

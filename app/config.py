@@ -21,10 +21,10 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 30
     refresh_token_expire_days: int = 7
 
-    ollama_base_url: str = "http://localhost:11434" 
-    ollama_model: str = "qwen3:4b-instruct"
-    ollama_temperature: float = 0.3
-    ollama_top_p: float = 0.9
+    base_url: str = "http://localhost:11434" 
+    model: str = "qwen3:4b-instruct"
+    temperature: float = 0.3
+    top_p: float = 0.9
 
 
 @lru_cache
