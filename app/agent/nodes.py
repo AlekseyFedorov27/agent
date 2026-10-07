@@ -31,7 +31,7 @@ def _compose_system_prompt(user_name: str, user_prompt: str) -> str:
 
 
 async def llm_node(state: AgentState) -> dict:
-    llm = get_llm().bind_tools(TOOLS)
+    llm = get_llm().bind_tools(ALL_TOOLS)
     messages = state["messages"]
 
     user_name = state.get("user_name") or ""

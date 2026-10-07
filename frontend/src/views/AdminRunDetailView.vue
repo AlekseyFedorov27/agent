@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import { useAuthStore } from '@/stores/auth'
@@ -7,6 +7,8 @@ import { useAdminStore } from '@/stores/admin'
 import { adminApi, type AdminEventOut } from '@/api/admin'
 import ConfirmModal from '@/components/ConfirmModal.vue'
 import { renderMarkdown } from '@/utils/markdown'
+import RunTimeline from '@/components/RunTimeline.vue'
+import { usePolling } from '@/composables/usePolling'
 
 const auth = useAuthStore()
 const admin = useAdminStore()
@@ -18,7 +20,7 @@ const { runDetail, runDetailLoading, runDetailError } = storeToRefs(admin)
 const runId = computed(() => String(route.params.runId || ''))
 
 // ---------------------------------------------------------------------------
-// События
+// События (аккордеон)
 // ---------------------------------------------------------------------------
 const expanded = ref<Record<string, boolean>>({})
 
@@ -99,9 +101,12 @@ async function toggleThread() {
     threadMessages.value = null
     return
   }
-  if (!runDetail.value) return
+  await loadThreadMessages(false)
+}
 
-  threadLoading.value = true
+async function loadThreadMessages(silent: boolean) {
+  if (!runDetail.value) return
+  if (!silent) threadLoading.value = true
   threadError.value = null
   try {
     threadMessages.value = await adminApi.getThreadMessages(
@@ -110,7 +115,7 @@ async function toggleThread() {
   } catch (e) {
     threadError.value = e instanceof Error ? e.message : String(e)
   } finally {
-    threadLoading.value = false
+    if (!silent) threadLoading.value = false
   }
 }
 
@@ -152,8 +157,104 @@ async function doDeleteThread() {
 }
 
 // ---------------------------------------------------------------------------
-onMounted(() => {
-  if (runId.value) admin.loadRun(runId.value)
+// Polling
+// ---------------------------------------------------------------------------
+// true, пока выполняем явную загрузку из onMounted/watch.
+// Глушим тики, чтобы не наслаивались.
+const loading = ref(false)
+
+async function refreshRun(silent: boolean) {
+  if (!runId.value) return
+  if (loading.value) return
+  loading.value = true
+  try {
+    await admin.loadRun(runId.value, { silent })
+    // если открыт просмотр сообщений — тихо подтягиваем и его
+    if (threadMessages.value) {
+      await loadThreadMessages(true)
+    }
+  } finally {
+    loading.value = false
+  }
+}
+
+const { isPolling, start: startPolling, stop: stopPolling, tick } = usePolling(
+  async () => {
+    // stopped/finished runs можно не переpoll-ить так часто,
+    // но пока просто проверяем: если runDetail не завершён —
+    // обновляем. Готовые тоже обновляем, но реже (см. логику ниже).
+    const r = runDetail.value
+    if (r && r.completed_at) {
+      // завершённый run — обновляем раз в 15 сек вместо 3
+      // (простая эвристика через время последнего обновления)
+      const now = Date.now()
+      if (now - lastFinishedTick.value < 15000) return
+      lastFinishedTick.value = now
+    }
+    await refreshRun(true)
+  },
+  3000,
+  { name: 'admin-run-detail', immediate: false, pauseWhenHidden: true },
+)
+
+const lastFinishedTick = ref(0)
+
+// ---------------------------------------------------------------------------
+// Trace / workflow visualization
+// ---------------------------------------------------------------------------
+type TraceStep = { id: string; kind: 'user'|'llm'|'tool'|'approval'|'resume'|'end'|'error'; title: string; subtitle?: string; durationMs?: number; status?: 'done'|'waiting'|'approved'|'rejected'|'error'; eventId?: string }
+
+function formatDuration(ms?: number): string { if (ms == null) return '—'; return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(2)}s` }
+function stepDuration(events: AdminEventOut[], i: number): number | undefined { const next=events[i+1]; if (!next) return undefined; const d=new Date(next.created_at).getTime()-new Date(events[i].created_at).getTime(); return d>=0 ? d : undefined }
+function eventToolNames(ev: AdminEventOut): string[] { const messages=(ev.payload as any)?.messages; if (!Array.isArray(messages)) return []; const names:string[]=[]; for (const m of messages) for (const tc of (Array.isArray(m?.tool_calls)?m.tool_calls:[])) if (tc?.name) names.push(String(tc.name)); return [...new Set(names)] }
+
+const traceSteps = computed<TraceStep[]>(() => {
+  const r=runDetail.value; if (!r) return []
+  const events=[...(r.events||[])].sort((a,b)=>new Date(a.created_at).getTime()-new Date(b.created_at).getTime())
+  const steps:TraceStep[]=[]
+  if (r.input) steps.push({id:`user-${r.id}`,kind:'user',title:'Пользователь',subtitle:typeof r.input==='string'?r.input:JSON.stringify(r.input),status:'done'})
+  for (let i=0;i<events.length;i++) {
+    const ev=events[i], durationMs=stepDuration(events,i)
+    if (ev.type==='llm_end') {
+      const tools=eventToolNames(ev)
+      steps.push({id:`llm-${ev.id}`,kind:'llm',title:'LLM',subtitle:tools.length?`Вызов: ${tools.join(', ')}`:'Ответ модели',durationMs,status:'done',eventId:ev.id})
+      for (const tool of tools) steps.push({id:`tool-${ev.id}-${tool}`,kind:'tool',title:tool,subtitle:'Инструмент',status:'done',eventId:ev.id})
+    } else if (ev.type==='tool_end') {
+      const tools=eventToolNames(ev); steps.push({id:`tool-end-${ev.id}`,kind:'tool',title:tools.join(', ')||'Инструмент',subtitle:'Выполнение завершено',durationMs,status:'done',eventId:ev.id})
+    } else if (ev.type==='interrupt') steps.push({id:`approval-${ev.id}`,kind:'approval',title:'Ожидание подтверждения',subtitle:'waiting for approval',durationMs,status:'waiting',eventId:ev.id})
+    else if (ev.type==='resume') { const approved=Boolean((ev.payload as any)?.approved); steps.push({id:`resume-${ev.id}`,kind:'resume',title:approved?'Подтверждено':'Отклонено',subtitle:approved?'Пользователь подтвердил действие':'Пользователь отклонил действие',durationMs,status:approved?'approved':'rejected',eventId:ev.id}) }
+    else if (ev.type==='error') steps.push({id:`error-${ev.id}`,kind:'error',title:'Ошибка',subtitle:payloadSummary(ev),durationMs,status:'error',eventId:ev.id})
+    else if (ev.type==='end') steps.push({id:`end-${ev.id}`,kind:'end',title:'END',subtitle:'Run завершён',status:'done',eventId:ev.id})
+  }
+  if (r.completed_at && !steps.some(s=>s.kind==='end')) steps.push({id:`end-${r.id}`,kind:'end',title:'END',subtitle:r.status,status:'done'})
+  return steps
+})
+
+const currentTraceStep = computed(() => { const s=traceSteps.value; if (!s.length) return null; if (runDetail.value?.completed_at) return s[s.length-1]; return [...s].reverse().find(x=>x.kind!=='user')??s[0] })
+const runStatusLabel = computed(() => { const r=runDetail.value; if (!r) return ''; if (r.completed_at) return r.status==='error'?'ERROR':'COMPLETED'; if (currentTraceStep.value?.kind==='approval') return 'WAITING FOR APPROVAL'; return 'RUNNING' })
+function traceIcon(kind:TraceStep['kind']):string { return ({user:'👤',llm:'🧠',tool:'🔧',approval:'⏸',resume:'✓',error:'!',end:'✓'} as Record<string,string>)[kind] }
+function scrollToEvent(eventId?:string) { if (!eventId) return; expanded.value[eventId]=true; requestAnimationFrame(()=>document.getElementById(`event-${eventId}`)?.scrollIntoView({behavior:'smooth',block:'center'})) }
+
+// Lifecycle
+// ---------------------------------------------------------------------------
+
+// при смене :runId в URL — грузим заново и сбрасываем аккордеон
+watch(runId, async (id) => {
+  if (!id) return
+  expanded.value = {}
+  threadMessages.value = null
+  threadError.value = null
+  await refreshRun(false)
+}, { immediate: false })
+
+onMounted(async () => {
+  if (!runId.value) return
+  await refreshRun(false)
+  startPolling()
+})
+
+onBeforeUnmount(() => {
+  stopPolling()
 })
 </script>
 
@@ -167,7 +268,23 @@ onMounted(() => {
           <div class="sub muted">Детали прогона</div>
         </div>
       </div>
+
       <div class="actions">
+        <div class="live-indicator" :class="{ active: isPolling }">
+          <span class="dot"></span>
+          <span class="live-text">{{ isPolling ? 'LIVE' : 'пауза' }}</span>
+          <button
+            class="ghost-btn small-btn"
+            :title="isPolling ? 'Остановить автообновление' : 'Включить автообновление'"
+            @click="isPolling ? stopPolling() : startPolling()"
+          >
+            {{ isPolling ? 'Пауза' : 'Включить' }}
+          </button>
+        </div>
+
+        <button class="ghost-btn" @click="tick()" title="Обновить сейчас">
+          Обновить
+        </button>
         <button class="ghost-btn" @click="router.push('/admin/runs')">
           ← К списку
         </button>
@@ -185,7 +302,7 @@ onMounted(() => {
       <p v-if="deleteError" class="error">{{ deleteError }}</p>
 
       <div
-        v-if="runDetailLoading"
+        v-if="runDetailLoading && !runDetail"
         class="muted"
         style="padding: 20px; text-align: center"
       >
@@ -195,6 +312,7 @@ onMounted(() => {
       <template v-else-if="runDetail">
         <!-- Мета run -->
         <section class="run-meta">
+          <RunTimeline :run="runDetail" />
           <div class="meta-row">
             <span class="muted">Пользователь:</span>
             <strong>{{ runDetail.user_name }}</strong>
@@ -241,11 +359,7 @@ onMounted(() => {
 
         <p v-if="threadError" class="error">{{ threadError }}</p>
 
-        <div
-          v-if="threadLoading"
-          class="muted"
-          style="padding: 12px"
-        >
+        <div v-if="threadLoading" class="muted" style="padding: 12px">
           Загрузка сообщений…
         </div>
 
@@ -281,6 +395,38 @@ onMounted(() => {
           </div>
         </div>
 
+        <!-- Trace / workflow -->
+        <section class="trace-section">
+          <div class="section-title-row">
+            <h3 class="section-title">Trace</h3>
+            <span class="run-status" :class="`status-${runStatusLabel.toLowerCase().replaceAll(' ', '-')}`">
+              <span class="status-dot"></span>{{ runStatusLabel }}
+            </span>
+          </div>
+          <div class="trace-card">
+            <div class="trace-header">
+              <strong>Workflow run <span class="muted">{{ runId.slice(0, 8) }}</span></strong>
+              <span v-if="currentTraceStep && !runDetail.completed_at" class="trace-current">Сейчас: <strong>{{ currentTraceStep.title }}</strong></span>
+            </div>
+            <div class="trace-flow">
+              <template v-for="(step, index) in traceSteps" :key="step.id">
+                <button class="trace-step" :class="[`trace-${step.kind}`, { 'is-current': currentTraceStep?.id === step.id }]" @click="scrollToEvent(step.eventId)">
+                  <div class="trace-icon">{{ traceIcon(step.kind) }}</div>
+                  <div class="trace-step-main">
+                    <div class="trace-step-title"><span>{{ step.title }}</span><span v-if="step.durationMs != null" class="trace-duration">{{ formatDuration(step.durationMs) }}</span></div>
+                    <div v-if="step.subtitle" class="trace-step-subtitle">{{ step.subtitle }}</div>
+                    <div v-if="step.status === 'approved'" class="trace-result approved">APPROVED</div>
+                    <div v-else-if="step.status === 'rejected'" class="trace-result rejected">REJECTED</div>
+                    <div v-else-if="step.status === 'waiting'" class="trace-result waiting">WAITING FOR APPROVAL</div>
+                  </div>
+                </button>
+                <div v-if="index < traceSteps.length - 1" class="trace-connector">↓</div>
+              </template>
+              <div v-if="!traceSteps.length" class="muted trace-empty">Недостаточно событий для построения Trace.</div>
+            </div>
+          </div>
+        </section>
+
         <!-- События -->
         <h3 class="section-title">
           События ({{ runDetail.events.length }})
@@ -292,6 +438,7 @@ onMounted(() => {
             :key="ev.id"
             class="event"
             :class="eventClass(ev.type)"
+            :id="`event-${ev.id}`"
           >
             <div class="event-head" @click="toggle(ev.id)">
               <span class="ev-time">{{ fmtTime(ev.created_at) }}</span>
@@ -322,6 +469,44 @@ onMounted(() => {
 </template>
 
 <style scoped>
+/* ---------- Live indicator ---------- */
+.live-indicator {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 11.5px;
+  color: var(--muted);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+.live-indicator .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--border-hover);
+  transition: background 0.15s ease, box-shadow 0.15s ease;
+}
+.live-indicator.active .dot {
+  background: #22c55e;
+  box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.18);
+  animation: live-pulse 1.5s infinite;
+}
+.live-indicator .live-text { min-width: 40px; }
+.live-indicator .small-btn {
+  padding: 2px 8px;
+  font-size: 11px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+@keyframes live-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
 /* ---------- Мета run ---------- */
 .run-meta {
   background: var(--bg-elev);
@@ -375,9 +560,7 @@ onMounted(() => {
   max-height: 600px;
   overflow-y: auto;
 }
-.thread-messages::-webkit-scrollbar {
-  width: 8px;
-}
+.thread-messages::-webkit-scrollbar { width: 8px; }
 .thread-messages::-webkit-scrollbar-thumb {
   background: var(--border);
   border-radius: 4px;
@@ -387,9 +570,7 @@ onMounted(() => {
   border-radius: 8px;
   padding: 10px 12px;
 }
-.thread-msg.is-human {
-  background: rgba(99, 102, 241, 0.1);
-}
+.thread-msg.is-human { background: rgba(99, 102, 241, 0.1); }
 .thread-msg.is-tool {
   background: #131820;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -403,15 +584,38 @@ onMounted(() => {
   margin-bottom: 6px;
   font-weight: 600;
 }
-.thread-msg-body {
-  word-wrap: break-word;
-}
+.thread-msg-body { word-wrap: break-word; }
+
+  /* ---------- Trace / workflow ---------- */
+  .section-title-row { display:flex; align-items:center; justify-content:space-between; gap:12px; margin:8px 0 12px; }
+  .section-title-row .section-title { margin:0; }
+  .run-status { display:inline-flex; align-items:center; gap:7px; padding:4px 9px; border:1px solid var(--border); border-radius:999px; font-size:10.5px; font-weight:700; letter-spacing:.05em; }
+  .status-dot { width:7px; height:7px; border-radius:50%; background:var(--muted); }
+  .status-running .status-dot { background:#22c55e; box-shadow:0 0 0 3px rgba(34,197,94,.14); animation:live-pulse 1.5s infinite; }
+  .status-waiting-for-approval .status-dot { background:#eab308; box-shadow:0 0 0 3px rgba(234,179,8,.14); }
+  .status-completed .status-dot { background:#10b981; }
+  .status-error .status-dot { background:#ef4444; }
+  .trace-card { background:var(--bg-elev); border:1px solid var(--border); border-radius:var(--radius); padding:16px; margin-bottom:20px; }
+  .trace-header { display:flex; align-items:center; justify-content:space-between; gap:16px; padding-bottom:14px; border-bottom:1px solid var(--border); font-size:13px; }
+  .trace-current { color:var(--muted); font-size:12px; }
+  .trace-current strong { color:var(--text); }
+  .trace-flow { display:flex; flex-direction:column; align-items:center; padding:18px 0 4px; }
+  .trace-step { width:min(720px,100%); display:flex; align-items:flex-start; gap:13px; text-align:left; padding:12px 14px; background:var(--bg-elev-2); border:1px solid var(--border); border-radius:10px; color:inherit; cursor:pointer; transition:border-color .15s ease,transform .15s ease,background .15s ease; }
+  .trace-step:hover { border-color:var(--border-hover); background:rgba(255,255,255,.025); transform:translateY(-1px); }
+  .trace-step.is-current { box-shadow:0 0 0 1px rgba(99,102,241,.35); }
+  .trace-icon { width:32px; height:32px; flex:0 0 32px; display:grid; place-items:center; border-radius:8px; background:rgba(255,255,255,.05); font-size:15px; }
+  .trace-step-main { min-width:0; flex:1; }
+  .trace-step-title { display:flex; align-items:center; justify-content:space-between; gap:12px; font-size:13.5px; font-weight:650; }
+  .trace-duration { flex:0 0 auto; color:var(--muted); font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:11.5px; font-weight:500; }
+  .trace-step-subtitle { margin-top:4px; color:var(--muted); font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .trace-result { display:inline-block; margin-top:7px; font-size:10px; font-weight:800; letter-spacing:.05em; }
+  .trace-result.approved { color:#22c55e; } .trace-result.rejected { color:#ef4444; } .trace-result.waiting { color:#eab308; }
+  .trace-llm { border-left:3px solid #6366f1; } .trace-tool { border-left:3px solid #22c55e; } .trace-approval { border-left:3px solid #eab308; } .trace-resume { border-left:3px solid #3b82f6; } .trace-end { border-left:3px solid #10b981; } .trace-error { border-left:3px solid #ef4444; } .trace-user { border-left:3px solid #8b5cf6; }
+  .trace-connector { height:30px; display:grid; place-items:center; color:var(--muted); font-size:15px; }
+  .trace-empty { width:100%; padding:20px; text-align:center; }
 
 /* ---------- События ---------- */
-.section-title {
-  margin: 8px 0 12px;
-  font-size: 15px;
-}
+.section-title { margin: 8px 0 12px; font-size: 15px; }
 .events {
   display: flex;
   flex-direction: column;
@@ -433,27 +637,20 @@ onMounted(() => {
   cursor: pointer;
   font-size: 13.5px;
 }
-.event-head:hover {
-  background: rgba(255, 255, 255, 0.02);
-}
+.event-head:hover { background: rgba(255, 255, 255, 0.02); }
 .ev-time {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   color: var(--muted);
   font-size: 12.5px;
 }
-.ev-type {
-  font-weight: 600;
-}
+.ev-type { font-weight: 600; }
 .ev-summary {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 12.5px;
 }
-.ev-toggle {
-  text-align: right;
-  color: var(--muted);
-}
+.ev-toggle { text-align: right; color: var(--muted); }
 .event-payload {
   margin: 0;
   padding: 12px 14px;
@@ -492,12 +689,6 @@ onMounted(() => {
   border-radius: 6px;
   font-size: 13px;
 }
-.tc-name {
-  font-weight: 600;
-  color: var(--accent-hover);
-}
-.tc-args {
-  color: var(--muted);
-  font-size: 12.5px;
-}
+.tc-name { font-weight: 600; color: var(--accent-hover); }
+.tc-args { color: var(--muted); font-size: 12.5px; }
 </style>

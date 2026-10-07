@@ -71,16 +71,21 @@ export const useAdminStore = defineStore('admin', () => {
   const runDetailLoading = ref(false)
   const runDetailError = ref<string | null>(null)
 
-  async function loadRun(id: string) {
-    runDetailLoading.value = true
+  async function loadRun(id: string, opts: { silent?: boolean } = {}) {
+    if (!opts.silent) {
+      runDetailLoading.value = true
+      runDetail.value = null
+    }
     runDetailError.value = null
-    runDetail.value = null
     try {
-      runDetail.value = await adminApi.getRun(id)
+      const fresh = await adminApi.getRun(id)
+      runDetail.value = fresh
     } catch (e) {
       runDetailError.value = extractApiError(e)
     } finally {
-      runDetailLoading.value = false
+      if (!opts.silent) {
+        runDetailLoading.value = false
+      }
     }
   }
 
