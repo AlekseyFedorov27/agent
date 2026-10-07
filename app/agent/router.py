@@ -27,7 +27,7 @@ DbSession = Annotated[AsyncSession, Depends(get_db)]
 Runtime = Annotated[AgentRuntimeService, Depends(get_runtime)]
 
 
-def _sse(event: str, data: dict) -> str:
+def _sse(event: str, data: dict[str, str]) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 

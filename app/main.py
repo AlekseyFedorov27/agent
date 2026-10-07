@@ -14,7 +14,7 @@ from app.core.database import dispose_db
 from app.core.telemetry import setup_telemetry
 from app.hitl.router import router as hitl_router
 from app.runs.router import router as runs_router
-
+from app.runs.admin_router import router as admin_runs_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -49,6 +49,7 @@ def create_app() -> FastAPI:
 
     app.include_router(auth_router)
     app.include_router(admin_router)
+    app.include_router(admin_runs_router)
     app.include_router(agent_router)
     app.include_router(hitl_router)
     app.include_router(runs_router)

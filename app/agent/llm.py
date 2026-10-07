@@ -9,8 +9,8 @@ from app.config import get_settings
 def get_llm() -> ChatOllama:
     settings = get_settings()
     return ChatOllama(
-        model=settings.ollama_model,
-        temperature=settings.ollama_temperature,
-        top_p=settings.ollama_top_p,
-        base_url=settings.ollama_base_url,
+        model=settings.model,
+        temperature=settings.temperature,
+        top_p=settings.top_p,
+        base_url=settings.base_url,
     )
