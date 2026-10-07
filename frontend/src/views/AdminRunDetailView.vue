@@ -96,14 +96,6 @@ const threadMessages = ref<ThreadMessage[] | null>(null)
 const threadLoading = ref(false)
 const threadError = ref<string | null>(null)
 
-async function toggleThread() {
-  if (threadMessages.value) {
-    threadMessages.value = null
-    return
-  }
-  await loadThreadMessages(false)
-}
-
 async function loadThreadMessages(silent: boolean) {
   if (!runDetail.value) return
   if (!silent) threadLoading.value = true
@@ -131,6 +123,22 @@ function roleLabel(t: string): string {
 
 function renderContent(m: ThreadMessage): string {
   return renderMarkdown(m.content)
+}
+
+// ---------------------------------------------------------------------------
+// Переключаемые вкладки под мета-блоком: 'trace' | 'thread' | null
+// ---------------------------------------------------------------------------
+const activeTab = ref<'trace' | 'thread' | null>('trace')
+
+async function toggleTab(tab: 'trace' | 'thread') {
+  if (activeTab.value === tab) {
+    activeTab.value = null
+    return
+  }
+  activeTab.value = tab
+  if (tab === 'thread' && !threadMessages.value) {
+    await loadThreadMessages(false)
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -244,6 +252,7 @@ watch(runId, async (id) => {
   expanded.value = {}
   threadMessages.value = null
   threadError.value = null
+  activeTab.value = 'trace'
   await refreshRun(false)
 }, { immediate: false })
 
@@ -343,10 +352,21 @@ onBeforeUnmount(() => {
           </div>
         </section>
 
-        <!-- Действия по треду -->
+        <!-- Действия / переключение вкладок -->
         <div class="thread-actions">
-          <button class="ghost-btn" @click="toggleThread">
-            {{ threadMessages ? 'Скрыть сообщения' : 'Показать сообщения треда' }}
+          <button
+            class="ghost-btn"
+            :class="{ active: activeTab === 'trace' }"
+            @click="toggleTab('trace')"
+          >
+            Workflow run
+          </button>
+          <button
+            class="ghost-btn"
+            :class="{ active: activeTab === 'thread' }"
+            @click="toggleTab('thread')"
+          >
+            {{ activeTab === 'thread' ? 'Скрыть сообщения' : 'Показать сообщения треда' }}
           </button>
           <button
             class="ghost-btn danger"
@@ -359,12 +379,19 @@ onBeforeUnmount(() => {
 
         <p v-if="threadError" class="error">{{ threadError }}</p>
 
-        <div v-if="threadLoading" class="muted" style="padding: 12px">
+        <div
+          v-if="threadLoading && activeTab === 'thread'"
+          class="muted"
+          style="padding: 12px"
+        >
           Загрузка сообщений…
         </div>
 
         <!-- Сообщения треда -->
-        <div v-if="threadMessages" class="thread-messages">
+        <div
+          v-if="activeTab === 'thread' && threadMessages"
+          class="thread-messages"
+        >
           <div v-if="!threadMessages.length" class="muted" style="padding: 8px">
             В треде нет сообщений
           </div>
@@ -396,7 +423,7 @@ onBeforeUnmount(() => {
         </div>
 
         <!-- Trace / workflow -->
-        <section class="trace-section">
+        <section v-if="activeTab === 'trace'" class="trace-section">
           <div class="section-title-row">
             <h3 class="section-title">Trace</h3>
             <span class="run-status" :class="`status-${runStatusLabel.toLowerCase().replaceAll(' ', '-')}`">
@@ -538,6 +565,11 @@ onBeforeUnmount(() => {
   gap: 10px;
   margin-bottom: 16px;
   flex-wrap: wrap;
+}
+.ghost-btn.active {
+  background: rgba(99, 102, 241, 0.15);
+  border-color: rgba(99, 102, 241, 0.5);
+  color: var(--text);
 }
 .ghost-btn.danger {
   color: var(--danger);
