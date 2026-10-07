@@ -1,5 +1,3 @@
 from .calculator import calculator
 
-ALL_TOOLS = [
-    calculator,
-]
+ALL_TOOLS = [calculator]
