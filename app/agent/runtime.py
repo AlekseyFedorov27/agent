@@ -146,6 +146,8 @@ class AgentRuntimeService:
                     payload = {
                         "node": node_name,
                         "messages": [_message_to_dict(m) for m in messages],
+                        "replan_count": node_output.get("replan_count"),      # ← новое
+                        "fits": (node_output.get("budget_report") or {}).get("fits"),  # ← новое
                     }
                     if node_name == "llm":
                         event_type = EventType.LLM_END

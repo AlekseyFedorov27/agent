@@ -2,39 +2,42 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 
-from app.agent.nodes import (
-    approval_node,
-    llm_node,
-    route_after_approval,
-    route_after_llm,
-    tool_node,
-)
+from app.nodes import NODES
+from app.nodes.ask_user import route_after_triage
+from app.nodes.budget_check import route_after_budget
 from app.agent.state import AgentState
 
 
 def build_graph(checkpointer: BaseCheckpointSaver | None = None):
     builder = StateGraph(AgentState)
 
-    builder.add_node("llm", llm_node)
-    builder.add_node("approval", approval_node)
-    builder.add_node("tools", tool_node)
+    builder.add_node("triage", NODES["triage"])
+    builder.add_node("ask_user", NODES["ask_user"])
+    builder.add_node("research", NODES["research"])
+    builder.add_node("plan", NODES["plan"])
+    builder.add_node("replan", NODES["replan"])
+    builder.add_node("budget_check", NODES["budget_check"])
 
-    builder.add_edge(START, "llm")
+    builder.add_edge(START, "triage")
     builder.add_conditional_edges(
-        "llm",
-        route_after_llm,
-        {"approval": "approval", "end": END},
+        "triage",
+        route_after_triage,
+        {"ask_user": "ask_user", "research": "research"},
     )
+
+    builder.add_edge("ask_user", END)
+
+    builder.add_edge("research", "plan")
+    builder.add_edge("plan", "budget_check")
     builder.add_conditional_edges(
-        "approval",
-        route_after_approval,
-        {"tools": "tools", "llm": "llm"},
+        "budget_check",
+        route_after_budget,
+        {"end": END, "replan": "replan"},
     )
-    builder.add_edge("tools", "llm")
+    builder.add_edge("replan", "budget_check")
 
-    if isinstance(checkpointer, BaseCheckpointSaver):
-        saver = checkpointer
-    else:
-        saver = InMemorySaver()
-
+    saver = (
+        checkpointer if isinstance(checkpointer, BaseCheckpointSaver)
+        else InMemorySaver()
+    )
     return builder.compile(checkpointer=saver)

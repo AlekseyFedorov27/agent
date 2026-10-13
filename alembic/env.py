@@ -13,6 +13,8 @@ from app.core.database import Base
 from app.auth import models as _auth_models  # noqa: F401
 from app.hitl import models as _hitl_models  # noqa: F401
 from app.runs import models as _runs_models  # noqa: F401
+from app.knowledge import models as _knowledge_models  # noqa: F401
+
 
 # Alembic Config object
 config = context.config

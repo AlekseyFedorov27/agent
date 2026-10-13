@@ -121,3 +121,18 @@ async def delete_thread_admin(
     await runtime.delete_thread_checkpoints(thread_id)
 
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/threads/{thread_id}/state")
+async def get_thread_state_admin(
+    thread_id: str,
+    runtime: Runtime,
+) -> dict:
+    """
+    Возвращает текущее состояние графа (AgentState) без messages —
+    они и так доступны отдельным эндпоинтом.
+    """
+    state = await runtime.get_state(thread_id)
+    values = dict(state.values or {})
+    values.pop("messages", None)   # Message-объекты не JSON-сериализуемы
+    return values    

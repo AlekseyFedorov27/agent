@@ -6,7 +6,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useAdminStore } from '@/stores/admin'
 import { adminApi, type AdminEventOut } from '@/api/admin'
 import ConfirmModal from '@/components/ConfirmModal.vue'
-import { renderMarkdown } from '@/utils/markdown'
+import VueMarkdown from 'vue-markdown-render'
 import RunTimeline from '@/components/RunTimeline.vue'
 import { usePolling } from '@/composables/usePolling'
 
@@ -126,11 +126,31 @@ function renderContent(m: ThreadMessage): string {
 }
 
 // ---------------------------------------------------------------------------
-// Переключаемые вкладки под мета-блоком: 'trace' | 'thread' | null
+// State треда (readonly-просмотр для админа)
 // ---------------------------------------------------------------------------
-const activeTab = ref<'trace' | 'thread' | null>('trace')
+const threadState = ref<Record<string, unknown> | null>(null)
+const threadStateLoading = ref(false)
+const threadStateError = ref<string | null>(null)
 
-async function toggleTab(tab: 'trace' | 'thread') {
+async function loadThreadState(silent: boolean) {
+  if (!runDetail.value) return
+  if (!silent) threadStateLoading.value = true
+  threadStateError.value = null
+  try {
+    threadState.value = await adminApi.getThreadState(runDetail.value.thread_id)
+  } catch (e) {
+    threadStateError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    if (!silent) threadStateLoading.value = false
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Переключаемые вкладки под мета-блоком: 'trace' | 'thread' | 'state' | null
+// ---------------------------------------------------------------------------
+const activeTab = ref<'trace' | 'thread' | 'state' | null>('trace')
+
+async function toggleTab(tab: 'trace' | 'thread' | 'state') {
   if (activeTab.value === tab) {
     activeTab.value = null
     return
@@ -138,6 +158,9 @@ async function toggleTab(tab: 'trace' | 'thread') {
   activeTab.value = tab
   if (tab === 'thread' && !threadMessages.value) {
     await loadThreadMessages(false)
+  }
+  if (tab === 'state' && !threadState.value) {
+    await loadThreadState(false)
   }
 }
 
@@ -180,6 +203,10 @@ async function refreshRun(silent: boolean) {
     // если открыт просмотр сообщений — тихо подтягиваем и его
     if (threadMessages.value) {
       await loadThreadMessages(true)
+    }
+    // если открыт просмотр state — тихо подтягиваем и его
+    if (threadState.value) {
+      await loadThreadState(true)
     }
   } finally {
     loading.value = false
@@ -252,6 +279,8 @@ watch(runId, async (id) => {
   expanded.value = {}
   threadMessages.value = null
   threadError.value = null
+  threadState.value = null
+  threadStateError.value = null
   activeTab.value = 'trace'
   await refreshRun(false)
 }, { immediate: false })
@@ -369,6 +398,13 @@ onBeforeUnmount(() => {
             {{ activeTab === 'thread' ? 'Скрыть сообщения' : 'Показать сообщения треда' }}
           </button>
           <button
+            class="ghost-btn"
+            :class="{ active: activeTab === 'state' }"
+            @click="toggleTab('state')"
+          >
+            {{ activeTab === 'state' ? 'Скрыть state' : 'Показать state' }}
+          </button>
+          <button
             class="ghost-btn danger"
             :disabled="deleting"
             @click="confirmDelete = true"
@@ -402,11 +438,11 @@ onBeforeUnmount(() => {
             :class="`is-${m.type}`"
           >
             <div class="thread-msg-role">{{ roleLabel(m.type) }}</div>
-            <div
+             <VueMarkdown
               v-if="m.content"
-              class="md thread-msg-body"
-              v-html="renderContent(m)"
-            ></div>
+              class="thread-msg-body"
+              :source="m.content"
+              />
             <div v-if="m.tool_calls?.length" class="tool-calls">
               <div
                 v-for="(tc, j) in m.tool_calls"
@@ -420,6 +456,31 @@ onBeforeUnmount(() => {
               </div>
             </div>
           </div>
+        </div>
+
+        <!-- State треда -->
+        <p v-if="threadStateError" class="error">{{ threadStateError }}</p>
+
+        <div
+          v-if="threadStateLoading && activeTab === 'state'"
+          class="muted"
+          style="padding: 12px"
+        >
+          Загрузка state…
+        </div>
+
+        <pre
+          v-if="activeTab === 'state' && threadState"
+          class="event-payload"
+          style="margin-bottom: 20px; border-radius: 8px; border: 1px solid var(--border)"
+        >{{ prettyJson(threadState) }}</pre>
+
+        <div
+          v-else-if="activeTab === 'state' && !threadStateLoading && !threadStateError"
+          class="muted"
+          style="padding: 12px"
+        >
+          State пуст
         </div>
 
         <!-- Trace / workflow -->

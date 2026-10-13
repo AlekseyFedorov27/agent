@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import type { ChatItem } from '@/stores/chat'
-import { renderMarkdown } from '@/utils/markdown'
+import VueMarkdown from 'vue-markdown-render'
 import { buildPdfFilename, exportElementToPdf } from '@/utils/pdf'
 
 const props = defineProps<{ item: ChatItem }>()
@@ -158,7 +158,11 @@ async function exportPdf() {
     </div>
 
     <div ref="root" class="msg-body pdf-target">
-      <div v-if="hasContent" class="md" v-html="htmlContent"></div>
+     <VueMarkdown
+        v-if="hasContent"
+        class="md"
+        :source="item.content"
+      />
       <div v-else-if="hasToolCalls" class="muted">(запрос инструмента)</div>
       <div v-else class="muted">(пустое сообщение)</div>
 

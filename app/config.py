@@ -21,10 +21,17 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 30
     refresh_token_expire_days: int = 7
 
+
+    openai_api_key: str
+    openai_base_url: str = "https://tokenharbor.ai/v1"
+    llm_model: str = "deepseek-v4.1-flash:free"
+    llm_temperature: float = 0.0
+    llm_top_p: float = 1.0
+
     ollama_base_url: str = "http://localhost:11434" 
-    ollama_model: str = "qwen3:4b-instruct"
-    ollama_temperature: float = 0.3
-    ollama_top_p: float = 0.9
+    ollama_model: str = "llama3.1:8b"
+    ollama_temperature: float = 0.0
+    ollama_top_p: float = 1.0
 
 
 @lru_cache

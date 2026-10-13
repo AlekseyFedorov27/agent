@@ -96,4 +96,10 @@ export const adminApi = {
   async deleteThread(threadId: string): Promise<void> {
     await http.delete(`/admin/runs/threads/${encodeURIComponent(threadId)}`)
   },
+  async getThreadState(threadId: string): Promise<Record<string, unknown>> {
+    const { data } = await http.get(
+      `/admin/runs/threads/${encodeURIComponent(threadId)}/state`,
+    )
+    return data
+  },
 }
