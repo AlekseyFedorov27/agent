@@ -125,6 +125,10 @@ async def test_engine(_setup_test_database):
     from app.runs import models as _runs_models  # noqa: F401
 
     async with engine.begin() as conn:
+        from sqlalchemy import text
+        await conn.execute(
+            text("CREATE EXTENSION IF NOT EXISTS vector")
+        )
         await conn.run_sync(Base.metadata.create_all)
 
     yield engine

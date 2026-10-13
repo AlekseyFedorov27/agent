@@ -1,315 +1,259 @@
-"""
-Узлы plan и replan.
+"""Генерация и перепланирование маршрута.
 
-- plan   — генерирует маршрут через LLM, извлекает стоимости.
-- replan — перерабатывает маршрут под бюджет.
-
-Стоимости извлекаются ВТОРЫМ вызовом LLM через function_calling.
-Если извлечение падает — возвращаются нули, чтобы граф не зацикливался.
+Важно: извлечение стоимости не должно подменять ошибку нулями. При неудаче
+узел явно помечает стоимость как непроверенную, а budget_check завершает ветку
+с предупреждением вместо ложного утверждения, что бюджет соблюдён.
 """
 
 import logging
-from typing import Any
+import math
+from typing import Any, Literal
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
 
 from app.agent.llm import get_llm
-from app.agent.state import AgentState
-
+from app.agent.state import AgentState, Currency
 
 logger = logging.getLogger(__name__)
 
+PLAN_SYSTEM_PROMPT = """Ты — опытный travel-планировщик. Составляй подробный маршрут на русском языке в Markdown.
 
-# Сколько символов markdown отдавать в _extract_costs.
-# Free-модели через Token Harbor не тянут очень длинные промпты —
-# жёсткая обрезка + function_calling вместо json_schema.
-EXTRACT_MAX_CHARS = 12_000
-
-
-# ─────────────────────────────────────────────────────────────
-# Промпты
-# ─────────────────────────────────────────────────────────────
-
-PLAN_SYSTEM_PROMPT = """Ты — опытный travel-планировщик. Составляешь подробный
-маршрут поездки на русском языке в формате markdown.
-
-ЖЁСТКИЕ ПРАВИЛА:
-
-1. Отвечай ТОЛЬКО финальным маршрутом. Никаких "Конечно!", "Вот ваш план".
-
-2. Структура ответа — строго такая:
-
-# Маршрут: <город/страна>, <N> дней
-
-Краткое вступление (2–3 предложения) — почему маршрут подойдёт этому
-пользователю (интересы, тип поездки, ограничения).
-
-<!-- BUDGET -->
-
-## День 1: <короткое название>
-
-**Утро.** Что, где, во сколько, сколько стоит.
-**День.** Конкретно.
-**Вечер.** Конкретно.
-**Заметки.** Опционально.
-
-## День 2: ...
-
-(и так все дни)
-
-## Жильё
-
-- **Район 1** — почему подойдёт, ~X €/ночь
-- **Район 2** — ...
-
-## Транспорт
-
-- Как перемещаться, цены
-- Что важно знать
-
-## Что взять с собой / на что обратить внимание
-
-- Пункт 1
-- Пункт 2
-
-3. Строку `<!-- BUDGET -->` оставь как есть, ничего вместо неё не пиши.
-   Python подставит туда таблицу бюджета.
-
-4. **Используй конкретные цены из предоставленных ДАННЫХ.**
-   Если в данных есть "билет 26 €" — пиши "26 €", не "уточнить".
-   Пиши "уточнить" только там, где данных реально нет.
-
-5. Учитывай ВСЕ ограничения пользователя (constraints). Если "без ранних
-   подъёмов" — не ставь активности до 10:00.
-
-6. Единицы: если валюта EUR — пиши "€".
+Правила:
+1. Отвечай только готовым маршрутом, без вступительных фраз от ассистента.
+2. Начни с '# Маршрут: <место>, <N> дней'. Сделай отдельные разделы по дням,
+   жилью, транспорту и практическим советам.
+3. Оставь строку <!-- BUDGET --> отдельной строкой: Python подставит туда отчёт.
+4. Учитывай все ограничения пользователя. Не выдумывай конкретные факты из базы
+   знаний; если цены/часы неизвестны, явно укажи, что их нужно уточнить.
+5. Валюта пользователя указана в запросе. Не смешивай валюты в одном плане.
+   Если цена в источнике указана в другой валюте и надёжного курса нет, не
+   пересчитывай её наугад: укажи исходную валюту и отметь, что стоимость требует
+   проверки. Не выдавай оценочные цены за подтверждённые цены.
+6. Сохраняй ссылки/названия источников, если они переданы в данных.
 """
 
-REPLAN_SYSTEM_PROMPT = """Ты — опытный travel-планировщик. Пользователь уже
-получил план, но он превысил бюджет. Переработай его, чтобы уложиться.
-
-Сокращай в первую очередь:
-- жильё (выбери район дешевле или другой формат)
-- платные активности (замени на бесплатные прогулки)
-
-Сохраняй структуру ответа ровно как в исходном плане, включая строку
-`<!-- BUDGET -->` на том же месте. Не выдумывай новые цифры — опирайся
-на те, что есть в исходном плане.
-
-Никаких вводных слов. Только финальный маршрут.
+REPLAN_SYSTEM_PROMPT = """Переработай существующий маршрут, чтобы снизить расходы и по возможности уложиться в бюджет.
+Сначала сокращай стоимость жилья и заменяй платные активности бесплатными.
+Сохраняй число дней, интересы и все жёсткие ограничения. Не придумывай цены и
+не пересчитывай валюты без курса. Оставь строку <!-- BUDGET --> на месте.
+Верни только полный обновлённый маршрут в Markdown.
 """
 
 
 class CostExtract(BaseModel):
-    """Стоимости из готового плана (в EUR)."""
-    hotels_eur: float = Field(default=0.0, ge=0, description="Жильё за все ночи")
-    activities_eur: float = Field(default=0.0, ge=0, description="Билеты, экскурсии, развлечения")
-    transport_eur: float = Field(default=0.0, ge=0, description="Транспорт внутри и переезды")
-    food_eur: float = Field(default=0.0, ge=0, description="Питание за всю поездку")
+    """Сумма расходов, извлечённая из всего маршрута.
+
+    currency должна быть MIXED/UNKNOWN, если валюту нельзя определить
+    однозначно или суммы в разных валютах нельзя корректно сложить.
+    """
+    hotels: float = Field(ge=0, description="Стоимость жилья за всю поездку")
+    activities: float = Field(ge=0, description="Все билеты и активности за поездку")
+    transport: float = Field(ge=0, description="Весь транспорт за поездку")
+    food: float = Field(ge=0, description="Питание за всю поездку")
+    currency: Literal["EUR", "USD", "RUB", "MIXED", "UNKNOWN"]
+    complete: bool = Field(description="True, если оценка охватывает все категории; False, если существенные расходы неизвестны")
+    notes: str = Field(default="", description="Краткое пояснение о неопределённых расходах")
 
 
-# ─────────────────────────────────────────────────────────────
-# Хелперы форматирования
-# ─────────────────────────────────────────────────────────────
+_EMPTY_COSTS: dict[str, float] = {
+    "hotels": 0.0,
+    "activities": 0.0,
+    "transport": 0.0,
+    "food": 0.0,
+}
+
 
 def _format_request(request: dict[str, Any]) -> str:
     lines: list[str] = []
-    cur = request.get("currency") or "EUR"
-    if request.get("destination"):   lines.append(f"Куда: {request['destination']}")
-    if request.get("country"):       lines.append(f"Страна: {request['country']}")
-    if request.get("duration_days"): lines.append(f"Дней: {request['duration_days']}")
-    if request.get("month"):         lines.append(f"Когда: {request['month']}")
-    if request.get("budget"):        lines.append(f"Бюджет: {request['budget']} {cur}")
-    if request.get("interests"):     lines.append(f"Интересы: {', '.join(request['interests'])}")
-    if request.get("travel_type"):   lines.append(f"Тип: {request['travel_type']}")
-    if request.get("constraints"):   lines.append(f"Ограничения: {'; '.join(request['constraints'])}")
+    currency = request.get("currency") or "EUR"
+    if request.get("destination"):
+        lines.append(f"Куда: {request['destination']}")
+    if request.get("country"):
+        lines.append(f"Страна: {request['country']}")
+    if request.get("duration_days"):
+        lines.append(f"Дней: {request['duration_days']}")
+    if request.get("month"):
+        lines.append(f"Когда: {request['month']}")
+    if request.get("budget") is not None:
+        lines.append(f"Бюджет: {request['budget']} {currency}")
+    if request.get("interests"):
+        lines.append(f"Интересы: {', '.join(request['interests'])}")
+    if request.get("travel_type"):
+        lines.append(f"Тип поездки: {request['travel_type']}")
+    if request.get("constraints"):
+        lines.append(f"Ограничения: {'; '.join(request['constraints'])}")
     return "\n".join(lines) or "(запрос пустой)"
 
 
 def _format_research(research: dict[str, Any]) -> str:
     parts: list[str] = []
-    for key, label in (
+    sections = (
         ("attractions", "ДОСТОПРИМЕЧАТЕЛЬНОСТИ"),
-        ("restaurants", "ЕДА"),
+        ("restaurants", "ЕДА И РЕСТОРАНЫ"),
         ("rules", "ПРАВИЛА И ЛОГИСТИКА"),
-    ):
-        chunks = research.get(key) or []
-        if not chunks:
+    )
+    for key, label in sections:
+        documents = research.get(key) or []
+        if not documents:
             continue
         parts.append(f"### {label}")
-        for i, c in enumerate(chunks, 1):
-            content = (c.get("content") or "").strip()
-            if content:
-                parts.append(f"[{i}] {content}")
-    return "\n".join(parts) if parts else "(База знаний пуста.)"
+        for index, document in enumerate(documents, 1):
+            content = str(document.get("content") or "").strip()
+            if not content:
+                continue
+            meta = document.get("meta") or {}
+            doc_id = document.get("doc_id") or meta.get("source") or meta.get("url")
+            score = document.get("score")
+            suffix = f"; источник: {doc_id}" if doc_id else ""
+            if isinstance(score, (int, float)):
+                suffix += f"; релевантность: {score:.2f}"
+            parts.append(f"[{index}{suffix}] {content}")
+    return "\n".join(parts) if parts else "(В базе знаний нет подходящих документов.)"
 
 
 def _safe_content(response: Any) -> str:
-    """LLM иногда возвращает не строку — приводим к строке."""
     content = getattr(response, "content", response)
-    if not isinstance(content, str):
-        content = str(content)
-    return content.strip()
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        text_parts = [item.get("text", "") for item in content if isinstance(item, dict)]
+        return "\n".join(part for part in text_parts if part).strip()
+    return str(content).strip()
 
-
-# ─────────────────────────────────────────────────────────────
-# Генерация markdown
-# ─────────────────────────────────────────────────────────────
 
 async def _generate_markdown(state: AgentState) -> str:
     request = state.get("request") or {}
     research = state.get("research") or {}
-
     user_message = (
-        "ЗАПРОС:\n" + _format_request(request) + "\n\n"
-        "ДАННЫЕ:\n" + _format_research(research) + "\n\n"
-        "Составь маршрут по правилам."
+        "ЗАПРОС ПОЛЬЗОВАТЕЛЯ:\n" + _format_request(request)
+        + "\n\nДОКУМЕНТЫ БАЗЫ ЗНАНИЙ:\n" + _format_research(research)
+        + "\n\nСоставь маршрут по правилам системного сообщения."
     )
-
     response = await get_llm().ainvoke([
         SystemMessage(content=PLAN_SYSTEM_PROMPT),
         HumanMessage(content=user_message),
     ])
-    return _safe_content(response)
+    markdown = _safe_content(response)
+    if not markdown:
+        raise ValueError("LLM вернула пустой маршрут")
+    return markdown
 
 
 async def _regenerate_markdown(state: AgentState) -> str:
-    old_markdown = (state.get("plan") or {}).get("markdown", "")
+    old_plan = state.get("plan") or {}
     report = state.get("budget_report") or {}
     request = state.get("request") or {}
-
-    over = report.get("over_by", 0)
-    limit = report.get("limit", 0)
-    cur = request.get("currency") or "EUR"
+    currency = request.get("currency") or "EUR"
+    over = report.get("over_by")
+    limit = report.get("limit")
+    if over is None or limit is None:
+        raise ValueError("Нельзя перепланировать маршрут без проверенного отчёта о бюджете")
 
     user_message = (
-        f"Предыдущий план превысил бюджет на {over:.0f} {cur}.\n"
-        f"Бюджет: {limit:.0f} {cur}.\n\n"
+        f"Бюджет: {limit:.2f} {currency}. Превышение: {over:.2f} {currency}.\n"
         f"Интересы: {', '.join(request.get('interests') or []) or '—'}\n"
         f"Ограничения: {'; '.join(request.get('constraints') or []) or '—'}\n\n"
-        f"Исходный план:\n\n{old_markdown}\n\n"
-        "Переработай план так, чтобы уложиться в бюджет. "
-        "Сохрани структуру и строку <!-- BUDGET --> на месте."
+        f"Исходный маршрут:\n{old_plan.get('markdown', '')}\n\n"
+        "Верни полный переработанный маршрут."
     )
-
     response = await get_llm().ainvoke([
         SystemMessage(content=REPLAN_SYSTEM_PROMPT),
         HumanMessage(content=user_message),
     ])
-    return _safe_content(response)
+    markdown = _safe_content(response)
+    if not markdown:
+        raise ValueError("LLM вернула пустой маршрут при перепланировании")
+    return markdown
 
 
-# ─────────────────────────────────────────────────────────────
-# Извлечение стоимостей
-# ─────────────────────────────────────────────────────────────
-
-def _empty_costs() -> dict[str, float]:
-    return {
-        "hotels_eur": 0.0,
-        "activities_eur": 0.0,
-        "transport_eur": 0.0,
-        "food_eur": 0.0,
-    }
-
-
-async def _extract_costs(markdown: str) -> dict[str, float]:
-    """
-    LLM извлекает суммы по 4 статьям из готового markdown.
-
-    Особенности:
-    - Обрезаем markdown до EXTRACT_MAX_CHARS — free-модели не тянут
-      длинные промпты и падают с "Unsupported message type: <class 'ellipsis'>".
-    - function_calling вместо json_schema — устойчивее.
-    - Любая ошибка → возвращаем нули, чтобы граф не зацикливался.
-    """
+async def _extract_costs(markdown: str, currency: Currency) -> tuple[dict[str, float], str]:
+    """Извлекает категории расходов. При ошибке выбрасывает исключение, не нули."""
     if not markdown.strip():
-        logger.warning("[costs] markdown пустой — возвращаю нули")
-        return _empty_costs()
-
-    snippet = markdown
-    if len(snippet) > EXTRACT_MAX_CHARS:
-        logger.warning(
-            "[costs] markdown слишком длинный (%d симв.), обрезаю до %d",
-            len(snippet), EXTRACT_MAX_CHARS,
-        )
-        snippet = snippet[:EXTRACT_MAX_CHARS]
-
-    try:
-        llm = get_llm().with_structured_output(CostExtract, method="function_calling")
-        result = await llm.ainvoke([
-            SystemMessage(content=(
-                "Извлеки стоимости из плана поездки. Суммируй все статьи. "
-                "Если чего-то не указано — верни 0. Будь точным."
-            )),
-            HumanMessage(content=snippet),
-        ])
-        if result is None:
-            logger.warning("[costs] structured output вернул None")
-            return _empty_costs()
-        data = result.model_dump()
-        total = sum(v for v in data.values())
-        logger.info(
-            "[costs] извлечено: %s, итого=%.0f",
-            {k: round(v) for k, v in data.items()}, total,
-        )
-        return data
-    except Exception as e:
-        logger.warning("[costs] extraction failed: %s — возвращаю нули", e)
-        return _empty_costs()
+        raise ValueError("Нельзя извлечь расходы из пустого маршрута")
+    llm = get_llm().with_structured_output(CostExtract, method="function_calling")
+    result = await llm.ainvoke([
+        SystemMessage(content=(
+            "Извлеки общие расходы из ПОЛНОГО маршрута. Не считай одну цену дважды: "
+            "цена за ночь умножается на число ночей только если число ночей известно; "
+            "цена за человека умножается на число путешественников только если это явно "
+            "указано. Если цена неизвестна, не выдумывай её и оценивай эту категорию как 0, "
+            "но не скрывай неизвестность: currency=UNKNOWN. Если суммы разных валют "
+            "нельзя корректно сложить, currency=MIXED. В поле currency укажи валюту "
+            f"всех учтённых сумм; ожидаемая валюта бюджета: {currency}. "
+            "Суммы должны охватывать весь маршрут, не только его начало. Поле complete=true "
+            "только если по всем четырём категориям есть оценка или подтверждённый ноль "
+            "(например, бесплатная активность); если существенная категория неизвестна, "
+            "complete=false. Неизвестные расходы нельзя выдавать за ноль."
+        )),
+        HumanMessage(content=markdown),
+    ])
+    if not isinstance(result, CostExtract):
+        result = CostExtract.model_validate(result)
+    costs = {
+        "hotels": float(result.hotels),
+        "activities": float(result.activities),
+        "transport": float(result.transport),
+        "food": float(result.food),
+    }
+    if any(not math.isfinite(value) or value < 0 for value in costs.values()):
+        raise ValueError("Извлечённые расходы содержат некорректные числа")
+    if not result.complete:
+        raise ValueError(result.notes or "В маршруте есть существенные расходы без оценки")
+    return costs, result.currency
 
 
-# ─────────────────────────────────────────────────────────────
-# Узлы графа
-# ─────────────────────────────────────────────────────────────
+async def _make_plan(state: AgentState, *, is_replan: bool) -> dict[str, Any]:
+    request = state.get("request") or {}
+    currency: Currency = request.get("currency") or "EUR"  # type: ignore[assignment]
+    markdown = await (_regenerate_markdown(state) if is_replan else _generate_markdown(state))
+
+    # Нет лимита — нет смысла делать отдельный LLM-вызов ради суммы.
+    if request.get("budget") is None:
+        costs = dict(_EMPTY_COSTS)
+        costs_valid: bool | None = None
+        costs_currency = currency
+        costs_error = None
+    else:
+        try:
+            costs, costs_currency = await _extract_costs(markdown, currency)
+            costs_valid = costs_currency == currency
+            costs_error = None if costs_valid else (
+                f"Валюту расходов определить однозначно нельзя или она не совпадает "
+                f"с валютой бюджета ({currency}); определено: {costs_currency}."
+            )
+        except Exception as exc:
+            logger.exception("Не удалось проверить стоимость маршрута")
+            costs = dict(_EMPTY_COSTS)
+            costs_valid = False
+            costs_currency = "UNKNOWN"
+            costs_error = "Не удалось надёжно извлечь расходы из маршрута. Повторите запрос позже."
+
+    plan_data: dict[str, Any] = {
+        "markdown": markdown,
+        "costs": costs,
+        "costs_valid": costs_valid,
+        "costs_currency": costs_currency,
+        "costs_error": costs_error,
+    }
+    result: dict[str, Any] = {"plan": plan_data}
+    if not is_replan:
+        result["replan_count"] = state.get("replan_count", 0)
+        result["max_replans"] = state.get("max_replans", 2)
+    else:
+        result["replan_count"] = state.get("replan_count", 0) + 1
+    logger.info(
+        "[%s] маршрут создан; chars=%d; costs_valid=%s; currency=%s",
+        "replan" if is_replan else "plan", len(markdown), costs_valid, costs_currency,
+    )
+    return result
+
 
 async def plan(state: AgentState) -> dict[str, Any]:
-    """Первый проход: генерируем маршрут."""
-    logger.info("[plan] старт первого прохода")
-
-    markdown = await _generate_markdown(state)
-    logger.info("[plan] markdown сгенерирован, %d символов", len(markdown))
-
-    costs = await _extract_costs(markdown)
-    total = sum(costs.values())
-    logger.info("[plan] итоговая сумма: %.0f", total)
-
-    return {
-        "plan": {"markdown": markdown, "costs": costs},
-        "replan_count": state.get("replan_count", 0),
-        "max_replans": state.get("max_replans", 2),
-    }
+    """Первичная генерация маршрута."""
+    return await _make_plan(state, is_replan=False)
 
 
 async def replan(state: AgentState) -> dict[str, Any]:
-    """Повторный проход под бюджет."""
-    old_plan = state.get("plan") or {}
-    report = state.get("budget_report") or {}
-    replan_count = state.get("replan_count", 0)
-    attempt = replan_count + 1
-
-    over = report.get("over_by", 0)
-    total = report.get("total", 0)
-    limit = report.get("limit", 0)
-    cur = report.get("currency") or "EUR"
-
-    logger.info(
-        "[replan] попытка %d: было total=%.0f, limit=%.0f, over=%.0f %s",
-        attempt, total, limit, over, cur,
-    )
-
-    if not old_plan.get("markdown"):
-        logger.warning("[replan] предыдущий план пуст — нечего переделывать")
-        return {"replan_count": attempt}
-
-    markdown = await _regenerate_markdown(state)
-    logger.info("[replan] новый markdown: %d символов", len(markdown))
-
-    costs = await _extract_costs(markdown)
-    new_total = sum(costs.values())
-    logger.info("[replan] новые costs, итого=%.0f", new_total)
-
-    return {
-        "plan": {"markdown": markdown, "costs": costs},
-        "replan_count": attempt,
-    }
+    """Перепланирование с ограниченным числом попыток."""
+    return await _make_plan(state, is_replan=True)
