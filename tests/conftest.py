@@ -1,353 +1,307 @@
-"""
-Общие фикстуры для всех тестов.
+"""Общие фикстуры.
 
-Стратегия:
-- Отдельная БД agent_test (создаётся и удаляется на сессию).
-- Схема создаётся через Base.metadata.create_all (Alembic в тестах не гоняем —
-  миграции проверяются отдельно, здесь важна скорость).
-- Отдельный AsyncPostgresSaver на тестовую БД.
-- Mock LLM — подменяет ChatOllama детерминированными ответами.
-- FastAPI test client — httpx.AsyncClient с ASGITransport.
+E2E-тесты (`tests/test_e2e_chat.py`) работают так:
+- Postgres — одноразовая test-БД на 5433 (docker-compose.yml);
+- LangGraph — `InMemorySaver`, поэтому `interrupt()` и `Command(resume=...)`
+  работают без реального checkpointer;
+- LLM — мок через `patch_llm`;
+- RAG — мок через `patch_rag` (не зовём Ollama).
+
+Unit-тесты (без `integration` маркера) не требуют БД вообще.
 """
 
-import asyncio
+from __future__ import annotations
+
 import os
-import sys
 import uuid
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable
 from typing import Any
 
+import asyncpg
 import pytest
-
-# Для новых версий pytest-asyncio на Windows принудительно ставим SelectorEventLoopPolicy
-if sys.platform == "win32":
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-# ---------------------------------------------------------------------------
-# ВАЖНО: переменные окружения должны быть установлены ДО первого импорта
-# app.config.get_settings(), потому что там @lru_cache.
-# ---------------------------------------------------------------------------
-TEST_DB_NAME = "agent_test"
-TEST_DB_URL = f"postgresql+asyncpg://postgres:postgres@localhost:5432/{TEST_DB_NAME}"
-TEST_DB_URL_PSYCOPG = f"postgresql://postgres:postgres@localhost:5432/{TEST_DB_NAME}"
-ADMIN_DB_URL = "postgresql://postgres:postgres@localhost:5432/postgres"
-
-os.environ["DATABASE_URL"] = TEST_DB_URL
-os.environ["JWT_SECRET_KEY"] = "test-secret-key-do-not-use-in-prod"
-os.environ["APP_ENV"] = "test"
-os.environ["DEBUG"] = "false"
-
-# Импорты после установки env
-import asyncpg  # noqa: E402
-import pytest  # noqa: E402
-from httpx import ASGITransport, AsyncClient  # noqa: E402
-from langchain_core.messages import AIMessage  # noqa: E402
-from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver  # noqa: E402
-from sqlalchemy.ext.asyncio import (  # noqa: E402
+import pytest_asyncio
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
     AsyncSession,
     async_sessionmaker,
     create_async_engine,
 )
 
-from app.agent.graph import build_graph  # noqa: E402
-from app.agent.runtime import AgentRuntimeService  # noqa: E402
-from app.auth.models import User  # noqa: E402
-from app.auth.service import register_user  # noqa: E402
-from app.core.database import Base, get_db  # noqa: E402
-from app.main import create_app  # noqa: E402
+from app.core.database import Base, get_db
 
 
-# ===========================================================================
-# Event loop (Windows)
-# ===========================================================================
+# --------------------------------------------------------------------------- #
+# Конфиг БД
+# --------------------------------------------------------------------------- #
 
-@pytest.fixture(scope="session")
-def event_loop() -> Iterator[asyncio.AbstractEventLoop]:
-    """Гарантирует использование SelectorEventLoop на Windows для psycopg."""
-    if sys.platform == "win32":
-        policy = asyncio.WindowsSelectorEventLoopPolicy()
-        loop = policy.new_event_loop()
-    else:
-        loop = asyncio.get_event_loop_policy().new_event_loop()
-    yield loop
-    loop.close()
+DB_HOST = os.getenv("TEST_DB_HOST", "localhost")
+DB_PORT = os.getenv("TEST_DB_PORT", "5433")
+DB_USER = os.getenv("TEST_DB_USER", "postgres")
+DB_PASSWORD = os.getenv("TEST_DB_PASSWORD", "postgres")
+TEST_DB_NAME = os.getenv("TEST_DB_NAME", f"agent_test_{uuid.uuid4().hex[:8]}")
+
+ADMIN_DB_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/postgres"
+TEST_DB_URL_ASYNC = (
+    f"postgresql+asyncpg://{DB_USER}:{DB_PASSWORD}"
+    f"@{DB_HOST}:{DB_PORT}/{TEST_DB_NAME}"
+)
+
+# Файлы, автоматически помечаемые маркером integration.
+INTEGRATION_PATHS = ("test_e2e_chat.py",)
 
 
-# Чтобы pytest-asyncio 0.24+ знал, какую фабрику использовать:
-@pytest.fixture(scope="session")
-def _asyncio_loop_factory():
-    if sys.platform == "win32":
-        import selectors
-        return lambda: asyncio.SelectorEventLoop(selectors.SelectSelector())
-    return asyncio.new_event_loop
-
-# ===========================================================================
-# Тестовая БД: создание / удаление
-# ===========================================================================
-
-async def _admin_execute(*statements: str) -> None:
+async def _admin_execute(sql: str) -> None:
     conn = await asyncpg.connect(ADMIN_DB_URL)
     try:
-        for stmt in statements:
-            await conn.execute(stmt)
+        await conn.execute(sql)
     finally:
         await conn.close()
 
 
-@pytest.fixture(scope="session", autouse=True)
-async def _setup_test_database() -> AsyncIterator[None]:
-    """Создаёт agent_test до тестов, удаляет после."""
-    await _admin_execute(
-        f"DROP DATABASE IF EXISTS {TEST_DB_NAME} WITH (FORCE)",
-        f"CREATE DATABASE {TEST_DB_NAME}",
-    )
+def pytest_collection_modifyitems(config, items):
+    for item in items:
+        path = str(item.fspath).replace("\\", "/")
+        if any(m in path for m in INTEGRATION_PATHS):
+            item.add_marker(pytest.mark.integration)
+
+
+@pytest_asyncio.fixture(scope="session", autouse=True)
+async def _setup_test_database(request: pytest.FixtureRequest):
+    needs_db = any("integration" in it.keywords for it in request.session.items)
+    if not needs_db:
+        yield
+        return
+    await _admin_execute(f'DROP DATABASE IF EXISTS "{TEST_DB_NAME}" WITH (FORCE)')
+    await _admin_execute(f'CREATE DATABASE "{TEST_DB_NAME}"')
     yield
-    await _admin_execute(f"DROP DATABASE IF EXISTS {TEST_DB_NAME} WITH (FORCE)")
+    await _admin_execute(f'DROP DATABASE IF EXISTS "{TEST_DB_NAME}" WITH (FORCE)')
 
 
-# ===========================================================================
-# Engine / session
-# ===========================================================================
+# --------------------------------------------------------------------------- #
+# Engine / Schema / Session
+# --------------------------------------------------------------------------- #
 
-@pytest.fixture(scope="session")
-async def test_engine(_setup_test_database):
-    engine = create_async_engine(
-        TEST_DB_URL,
-        # pool_pre_ping=True,
-        connect_args={
-            "prepared_statement_cache_size": 0,
-            "server_settings": {"application_name": "agent-backend-tests"},
-        },
-    )
+@pytest_asyncio.fixture(scope="session")
+async def engine(_setup_test_database) -> AsyncIterator[AsyncEngine]:
+    from app.auth import models as _auth_models          # noqa: F401
+    from app.hitl import models as _hitl_models          # noqa: F401
+    from app.runs import models as _runs_models          # noqa: F401
+    from app.knowledge import models as _knowledge_models  # noqa: F401
 
-    # Регистрируем все модели в metadata
-    from app.auth import models as _auth_models  # noqa: F401
-    from app.hitl import models as _hitl_models  # noqa: F401
-    from app.runs import models as _runs_models  # noqa: F401
-
-    async with engine.begin() as conn:
-        from sqlalchemy import text
-        await conn.execute(
-            text("CREATE EXTENSION IF NOT EXISTS vector")
-        )
+    eng = create_async_engine(TEST_DB_URL_ASYNC, echo=False)
+    async with eng.begin() as conn:
+        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         await conn.run_sync(Base.metadata.create_all)
-
-    yield engine
-    await engine.dispose()
-
-
-@pytest.fixture(scope="session")
-def test_session_factory(test_engine) -> async_sessionmaker[AsyncSession]:
-    return async_sessionmaker(bind=test_engine, expire_on_commit=False)
+    yield eng
+    await eng.dispose()
 
 
-@pytest.fixture
-async def test_session(
-    test_session_factory: async_sessionmaker[AsyncSession],
-) -> AsyncIterator[AsyncSession]:
-    """Свежая сессия на каждый тест. Не откатывает транзакции сама —
-    изоляция обеспечивается через TRUNCATE в _clean_db."""
-    async with test_session_factory() as session:
-        yield session
+async def _truncate_all(engine: AsyncEngine) -> None:
+    async with engine.begin() as conn:
+        for table in reversed(Base.metadata.sorted_tables):
+            await conn.execute(text(f'TRUNCATE TABLE "{table.name}" CASCADE'))
 
 
-@pytest.fixture(autouse=True)
-async def _clean_db(test_engine) -> AsyncIterator[None]:
-    """
-    TRUNCATE наших таблиц перед каждым тестом.
-    LangGraph-таблицы чистим, только если они уже созданы (checkpointer
-    поднимается отдельной фикстурой, которая не autouse).
-    """
-    from sqlalchemy import text
-
-    async with test_engine.begin() as conn:
-        # Наши таблицы — точно есть после Base.metadata.create_all
-        await conn.execute(
-            text(
-                "TRUNCATE TABLE events, approvals, runs, users "
-                "RESTART IDENTITY CASCADE"
-            )
-        )
-
-        # LangGraph-таблицы — могут отсутствовать до первого test_checkpointer
-        await conn.execute(
-            text(
-                """
-                DO $$
-                BEGIN
-                    IF to_regclass('public.checkpoints') IS NOT NULL THEN
-                        TRUNCATE TABLE checkpoint_writes,
-                                       checkpoint_blobs,
-                                       checkpoints
-                        CASCADE;
-                    END IF;
-                END $$;
-                """
-            )
-        )
-    yield
+@pytest_asyncio.fixture
+async def session(engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    async with maker() as s:
+        yield s
+        await s.rollback()
+    await _truncate_all(engine)
 
 
-# ===========================================================================
-# Checkpointer / runtime
-# ===========================================================================
-
-@pytest.fixture(scope="session")
-async def test_checkpointer() -> AsyncIterator[AsyncPostgresSaver]:
-    async with AsyncPostgresSaver.from_conn_string(TEST_DB_URL_PSYCOPG) as saver:
-        await saver.setup()
-        yield saver
+@pytest_asyncio.fixture
+async def test_session(session: AsyncSession) -> AsyncSession:
+    """Алиас на `session` — старое имя в unit-тестах сервисов."""
+    return session
 
 
-@pytest.fixture
-def test_runtime(test_checkpointer) -> AgentRuntimeService:
-    graph = build_graph(test_checkpointer)
-    return AgentRuntimeService(graph)
+# --------------------------------------------------------------------------- #
+# FastAPI-клиент c InMemorySaver и без lifespan
+# --------------------------------------------------------------------------- #
+
+def _build_test_app():
+    """Собирает приложение, но не запускает lifespan."""
+    from app.main import create_app
+    from app.agent.graph import build_graph
+    from app.agent.runtime import AgentRuntimeService
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    app = create_app()
+
+    # Граф с InMemorySaver — interrupt()/resume() работают в памяти,
+    # реальный AsyncPostgresSaver не нужен.
+    app.state.runtime = AgentRuntimeService(build_graph(InMemorySaver()))
+    return app
 
 
-# ===========================================================================
-# FastAPI app / client
-# ===========================================================================
+@pytest_asyncio.fixture
+async def client(engine: AsyncEngine) -> AsyncIterator[AsyncClient]:
+    app = _build_test_app()
+    maker = async_sessionmaker(engine, expire_on_commit=False)
 
-@pytest.fixture
-async def app(test_session_factory, test_runtime, monkeypatch):
-    """
-    Создаём приложение без стандартного lifespan (там свои checkpointer и engine).
-    Подменяем get_db на тестовую фабрику и складываем runtime в app.state.
-    """
-    from app.agent.dependencies import get_runtime
-
-    fastapi_app = create_app()
-
-    # Убираем настоящий lifespan — он поднимет свой checkpointer на prod-БД.
-    fastapi_app.router.lifespan_context = _null_lifespan
-
-    async def _override_get_db() -> AsyncIterator[AsyncSession]:
-        async with test_session_factory() as session:
+    async def _override_get_db():
+        async with maker() as s:
             try:
-                yield session
+                yield s
             except Exception:
-                await session.rollback()
+                await s.rollback()
                 raise
 
-    fastapi_app.dependency_overrides[get_db] = _override_get_db
-    fastapi_app.dependency_overrides[get_runtime] = lambda: test_runtime
+    app.dependency_overrides[get_db] = _override_get_db
 
-    fastapi_app.state.runtime = test_runtime
-
-    monkeypatch.setattr(
-        "app.agent.router.get_session_factory",
-        lambda: test_session_factory,
-    )
-    return fastapi_app
-
-
-async def _null_lifespan(app):
-    """Заглушка lifespan для тестов — ничего не поднимаем/не закрываем."""
-    yield
-
-
-@pytest.fixture
-async def client(app) -> AsyncIterator[AsyncClient]:
-    async with AsyncClient(
-        transport=ASGITransport(app=app),
-        base_url="http://test",
-    ) as ac:
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac
+    app.dependency_overrides.clear()
 
 
-# ===========================================================================
-# Пользователи
-# ===========================================================================
+@pytest_asyncio.fixture
+async def authenticated_client(client: AsyncClient) -> AsyncIterator[AsyncClient]:
+    email = f"user_{uuid.uuid4().hex[:8]}@test.local"
+    password = "password123"
 
-@pytest.fixture
-async def test_user(test_session: AsyncSession) -> User:
-    user = await register_user(
-        test_session,
-        email="user@test.com",
-        password="testpassword123",
+    r = await client.post(
+        "/auth/register",
+        json={"email": email, "password": password, "name": "Test User"},
     )
-    return user
+    assert r.status_code == 201, r.text
+
+    r = await client.post("/auth/login", json={"email": email, "password": password})
+    assert r.status_code == 200, r.text
+    token = r.json()["access_token"]
+
+    client.headers["Authorization"] = f"Bearer {token}"
+    try:
+        yield client
+    finally:
+        client.headers.pop("Authorization", None)
 
 
-@pytest.fixture
-async def auth_headers(client: AsyncClient, test_user: User) -> dict[str, str]:
-    response = await client.post(
-        "/auth/login",
-        json={"email": test_user.email, "password": "testpassword123"},
-    )
-    assert response.status_code == 200, response.text
-    token = response.json()["access_token"]
-    return {"Authorization": f"Bearer {token}"}
+# --------------------------------------------------------------------------- #
+# Мок LLM
+# --------------------------------------------------------------------------- #
+
+class _FakeStructuredOutput:
+    def __init__(self, schema: type, queue: list[Any], label: str) -> None:
+        self._schema = schema
+        self._queue = queue
+        self._label = label
+
+    async def ainvoke(self, messages, **kw):
+        # 1) точное совпадение типа
+        for i, r in enumerate(self._queue):
+            if isinstance(r, self._schema):
+                return self._queue.pop(i)
+        # 2) dict → валидируем в схему
+        for i, r in enumerate(self._queue):
+            if isinstance(r, dict):
+                try:
+                    validated = self._schema.model_validate(r)
+                    self._queue.pop(i)
+                    return validated
+                except Exception:
+                    continue
+        raise AssertionError(
+            f"[{self._label}] нет ответа для {self._schema.__name__}. "
+            f"Остаток очереди: {[type(x).__name__ for x in self._queue]}"
+        )
 
 
-@pytest.fixture
-async def authenticated_client(
-    app, auth_headers: dict[str, str]
-) -> AsyncIterator[AsyncClient]:
-    """Отдельный клиент с Authorization. Не мутирует общий `client`."""
-    async with AsyncClient(
-        transport=ASGITransport(app=app),
-        base_url="http://test",
-        headers=auth_headers,
-    ) as ac:
-        yield ac
-
-
-# ===========================================================================
-# Mock LLM
-# ===========================================================================
-
-class FakeLLM:
-    def __init__(self, responses: list[AIMessage]):
-        self._responses = list(responses)
-        self._index = 0
-        self.calls: list[list] = []      # история входных messages
-
-    def invoke(self, messages, **kwargs):
-        if self._index >= len(self._responses):
-            raise RuntimeError("FakeLLM: no more responses")
-        response = self._responses[self._index]
-        self._index += 1
-        self.calls.append(list(messages))
-        return response
-
-    async def ainvoke(self, messages, **kwargs):
-        return self.invoke(messages, **kwargs)
+class _FakeLLM:
+    def __init__(self, queue: list[Any], label: str) -> None:
+        self._queue = queue
+        self._label = label
 
     def bind_tools(self, tools):
         return self
 
-    @property
-    def call_count(self) -> int:
-        return len(self.calls)
+    def with_structured_output(self, schema, method=None):
+        return _FakeStructuredOutput(schema, self._queue, self._label)
+
+    async def ainvoke(self, messages, **kw):
+        from langchain_core.messages import AIMessage
+        for i, r in enumerate(self._queue):
+            if isinstance(r, (AIMessage, str)):
+                item = self._queue.pop(i)
+                return item if isinstance(item, AIMessage) else AIMessage(content=item)
+        raise AssertionError(
+            f"[{self._label}] нет AIMessage в очереди. "
+            f"Остаток: {[type(x).__name__ for x in self._queue]}"
+        )
 
 
 @pytest.fixture
-def patch_llm(monkeypatch) -> callable:
+def patch_llm(monkeypatch) -> Callable[[list[Any]], None]:
     """
-    Возвращает функцию, которая подменяет get_llm на FakeLLM с заданными ответами.
-    Использование:
-        patch_llm([AIMessage(content="hello")])
-        patch_llm([AIMessage(tool_calls=[...]), AIMessage(content="done")])
+    Устанавливает фейковый `get_llm` во всех модулях, которые его используют.
+
+    Порядок в очереди не важен: `patch_llm` отдаёт ответ по типу схемы —
+    `Triage` для `with_structured_output(Triage)`, `CostExtract` для
+    `with_structured_output(CostExtract)` и т.д.
     """
-    from app.agent import nodes
+    def _apply(responses: list[Any]) -> None:
+        # Общая очередь на все модули — так сохраняется порядок вызовов
+        # внутри одного сценария, но узлы всё равно берут «свой» тип.
+        queue = list(responses)
 
-    def _patch(responses: list[AIMessage]) -> FakeLLM:
-        fake = FakeLLM(responses)
-        monkeypatch.setattr(nodes, "get_llm", lambda: fake)
-        return fake
+        def _factory(label: str):
+            def _get_llm():
+                return _FakeLLM(queue, label)
+            return _get_llm
 
-    return _patch
+        # Патчим в каждом модуле, где есть собственный `get_llm`
+        for mod in (
+            "app.nodes.triage",
+            "app.nodes.plan",
+            "app.nodes.ask_user",
+        ):
+            monkeypatch.setattr(f"{mod}.get_llm", _factory(mod))
+
+    return _apply
 
 
-# ===========================================================================
-# Хелперы для tool_calls
-# ===========================================================================
+# --------------------------------------------------------------------------- #
+# Мок RAG
+# --------------------------------------------------------------------------- #
 
-def make_tool_call(name: str, args: dict, *, id: str | None = None) -> dict:
+@pytest.fixture
+def patch_rag(monkeypatch) -> Callable[..., None]:
+    """
+    Возвращает фиктивные документы из `search_knowledge`.
+
+    По умолчанию — один документ `spain.md`. Можно переопределить
+    содержимое через аргументы.
+    """
+    def _apply(documents: list[dict[str, Any]] | None = None) -> None:
+        docs = documents if documents is not None else [
+            {
+                "doc_id": "spain.md",
+                "content": "Барселона — май, архитектура Гауди, пляжи.",
+                "meta": {"country_ru": "Испания", "path": "spain.md"},
+                "score": 0.9,
+            }
+        ]
+
+        async def _fake_search(session, query, *, top_k=5, filters=None):
+            return list(docs)
+
+        monkeypatch.setattr("app.nodes.research.search_knowledge", _fake_search)
+
+    return _apply
+
+
+# --------------------------------------------------------------------------- #
+# Мелкие хелперы
+# --------------------------------------------------------------------------- #
+
+@pytest.fixture
+def user_payload() -> dict[str, str]:
     return {
-        "name": name,
-        "args": args,
-        "id": id or str(uuid.uuid4()),
-        "type": "tool_call",
+        "email": f"u_{uuid.uuid4().hex[:8]}@test.local",
+        "password": "password123",
+        "name": "Test User",
     }

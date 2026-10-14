@@ -20,7 +20,11 @@ async def research(state: AgentState) -> dict[str, Any]:
         raise ValueError("Узел research вызван без destination и country")
 
     search_location = country or destination
-    filters = {"country_ru": country} if country else None
+    filters = None
+    if country:
+        filters = {"country_ru": country}
+    elif destination:
+        filters = None
     interests_text = " ".join(str(item) for item in interests if item)
     queries = {
         "attractions": f"{search_location} достопримечательности что посмотреть {interests_text}".strip(),

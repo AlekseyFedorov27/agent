@@ -38,10 +38,10 @@ class Research(TypedDict):
 class Plan(TypedDict):
     markdown: str
     costs: dict[str, float]
-    # None = cost extraction wasn't required (no budget supplied).
     costs_valid: bool | None
     costs_error: NotRequired[str | None]
     costs_currency: NotRequired[str | None]
+    costs_confidence: NotRequired[str | None] 
 
 
 class BudgetReport(TypedDict):
@@ -51,6 +51,7 @@ class BudgetReport(TypedDict):
     fits: bool | None
     over_by: float | None
     currency: Currency
+    confidence: NotRequired[str]
     breakdown: dict[str, float]
     error: NotRequired[str | None]
 
@@ -77,5 +78,14 @@ class AgentState(TypedDict, total=False):
     final_itinerary: str | None
     triage_error: str | None
 
+    # --- Счётчик авто-перепланирования из-за бюджета ---
     replan_count: int
     max_replans: int
+
+    # --- Счётчик пользовательских доработок (reject в plan_approval) ---
+    plan_revision_count: int
+    max_plan_revisions: int
+
+    # --- HITL по плану ---
+    plan_decision: Literal["approved", "rejected"] | None
+    plan_comment: str | None

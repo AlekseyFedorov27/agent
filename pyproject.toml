@@ -45,7 +45,10 @@ dev = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "session"
-asyncio_default_test_loop_scope = "session"  # <- Добавьте/измените эту строку!
+asyncio_default_test_loop_scope = "session"
 testpaths = ["tests"]
 addopts = "-ra -q --strict-markers"
+markers = [
+    "integration: tests that need a real PostgreSQL",
+]
 

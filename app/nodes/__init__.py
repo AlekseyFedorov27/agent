@@ -3,7 +3,7 @@ from .ask_user import ask_user
 from .research import research
 from .plan import plan, replan
 from .budget_check import budget_check
-
+from .plan_approval import plan_approval
 
 NODES =  {
     "triage": triage,
@@ -12,4 +12,5 @@ NODES =  {
     "plan": plan,
     "replan": replan,
     "budget_check": budget_check,
+    "plan_approval": plan_approval
 }

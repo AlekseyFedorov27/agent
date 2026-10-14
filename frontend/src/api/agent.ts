@@ -32,8 +32,11 @@ export interface ApprovalOut {
   thread_id: string
   status: string
   payload: {
-    type?: string
+    type?: 'tool_approval' | 'plan_approval'
     tool_calls?: Array<{ id: string; name: string; args: Record<string, any> }>
+    plan_markdown?: string
+    budget_report?: Record<string, any>
+    request?: Record<string, any>
   }
   comment: string | null
   created_at: string

@@ -95,6 +95,7 @@ def _merge_request(previous: dict[str, Any], new: dict[str, Any]) -> dict[str, A
 async def triage(state: AgentState) -> dict[str, Any]:
     messages = state.get("messages") or []
     last_human = _last_human_message(messages)
+
     if not last_human.strip():
         return {
             "request": {},
@@ -106,6 +107,8 @@ async def triage(state: AgentState) -> dict[str, Any]:
             "triage_error": "В сообщениях нет текста пользователя.",
             "replan_count": 0,
             "max_replans": 2,
+            "plan_revision_count": 0,
+            "max_plan_revisions": 5,
         }
 
     previous_request = state.get("request") or {}
@@ -132,9 +135,9 @@ async def triage(state: AgentState) -> dict[str, Any]:
         if not request.get("currency"):
             request["currency"] = "EUR"
 
-    # Валюта имеет значение только вместе с бюджетом, но фиксируем единый default.
     request.setdefault("currency", "EUR")
     missing = [field for field in REQUIRED_FIELDS if request.get(field) in (None, "", [])]
+
     logger.info(
         "Triage завершён: destination=%r, days=%r, month=%r, missing=%s, mode=%s",
         request.get("destination"), request.get("duration_days"), request.get("month"),
@@ -150,4 +153,6 @@ async def triage(state: AgentState) -> dict[str, Any]:
         "triage_error": None,
         "replan_count": 0,
         "max_replans": 2,
+        "plan_revision_count": 0,      # ← новое
+        "max_plan_revisions": 5,       # ← новое
     }
