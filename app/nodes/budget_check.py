@@ -2,20 +2,15 @@
 
 Статусы отчёта:
 - no_budget: пользователь не задал лимит;
-- unverified: недостаточно данных, ошибка валюты или некорректные значения;
+- unverified: недостаточно данных или ошибка валюты;
 - verified: все расходы точные и сумма не превышает лимит;
 - over_budget: все расходы точные и сумма превышает лимит;
-- estimated: сумма ориентировочная (все категории оценены);
-- partial: сумма неполная или смешивает подтверждённые и оценочные данные.
+- estimated: сумма ориентировочная или неполная (не подтверждена).
 
-Автоматическое перепланирование разрешено только при точном превышении
-(over_budget). Оценка выше лимита — предупреждение для пользователя, а не факт.
+Автоматический replan разрешён только при точном превышении (over_budget).
 """
 
-import math
 from typing import Any
-
-from langchain_core.messages import AIMessage
 
 from app.agent.state import AgentState
 
@@ -29,196 +24,104 @@ LABELS = {
 BUDGET_MARKER = "<!-- BUDGET -->"
 
 
-def _valid_costs(costs: Any) -> dict[str, float] | None:
-    """Проверяет наличие всех обязательных категорий и нормализует суммы."""
-    if not isinstance(costs, dict):
-        return None
-    normalized: dict[str, float] = {}
-    try:
-        for key in COST_KEYS:
-            value = float(costs[key])
-            if not math.isfinite(value) or value < 0:
-                return None
-            normalized[key] = value
-    except (KeyError, TypeError, ValueError):
-        return None
-    return normalized
-
-
-def _valid_limit(raw: Any) -> float | None:
-    try:
-        value = float(raw)
-    except (TypeError, ValueError):
-        return None
-    if not math.isfinite(value) or value < 0:
-        return None
-    return value
-
-
 def _money(value: float, currency: str) -> str:
     return f"{value:,.2f} {currency}".replace(",", " ")
 
 
-def _render_budget_table(report: dict[str, Any]) -> str:
-    """Рендерит отчёт, не называя ориентировочную сумму проверенной."""
-    status = report.get("status")
+def _build_report(plan: dict[str, Any], limit: float | None, currency: str) -> dict[str, Any]:
+    confidence = plan.get("costs_confidence") or "unknown"
+    costs = plan.get("costs") or {}
+    report: dict[str, Any] = {
+        "status": "no_budget",
+        "currency": currency,
+        "limit": limit,
+        "total": None,
+        "over_by": None,
+        "fits": None,
+        "breakdown": costs,
+        "confidence": confidence,
+        "notes": plan.get("costs_notes") or "",
+    }
+    if limit is None:
+        return report
+
+    costs_currency = plan.get("costs_currency")
+    error = None
+    if costs_currency == "MIXED":
+        error = "В плане смешаны несколько валют; без курса сумму нельзя сложить."
+    elif costs_currency != currency:
+        error = (
+            f"Валюта плана ({costs_currency}) не совпадает с валютой бюджета ({currency}). "
+            "Система не пересчитывает валюты без надёжного курса."
+        )
+    elif confidence == "unknown" or not all(k in costs for k in COST_KEYS):
+        error = "Не удалось надёжно оценить стоимость маршрута."
+    if error:
+        return {**report, "status": "unverified", "error": error}
+
+    total = sum(costs[k] for k in COST_KEYS)
+    report["total"] = total
+    if confidence == "exact":
+        report.update(
+            status="verified" if total <= limit else "over_budget",
+            fits=total <= limit,
+            over_by=max(0.0, total - limit),
+        )
+    else:
+        report["status"] = "estimated"  # estimated и partial — не подтверждено
+    return report
+
+
+def _render(report: dict[str, Any]) -> str:
+    status, cur = report["status"], report["currency"]
     if status == "no_budget":
         return ""
     if status == "unverified":
         return (
             "## Проверка бюджета\n\n"
-            "⚠️ Не удалось надёжно проверить стоимость маршрута. "
-            "Не считайте этот план подтверждённым по бюджету.\n\n"
-            f"Причина: {report.get('error') or 'недостаточно данных'}"
+            "⚠️ Бюджет не проверен, не считайте план подтверждённым.\n\n"
+            f"Причина: {report.get('error')}"
         )
 
-    currency = str(report.get("currency") or "EUR")
-    breakdown = report.get("breakdown") or {}
-    lines = [
-        "## Оценка бюджета" if status in {"estimated", "partial"} else "## Бюджет",
-        "",
-        "| Статья | Стоимость |",
-        "|---|---:|",
-    ]
-    for key in COST_KEYS:
-        lines.append(f"| {LABELS[key]} | {_money(float(breakdown[key]), currency)} |")
-    lines.extend([
-        f"| **Итого** | **{_money(float(report['total']), currency)}** |",
-        "",
-    ])
-
-    limit = float(report["limit"])
-    confidence = report.get("confidence")
-    if status == "verified":
-        lines.append(f"Лимит: {_money(limit, currency)} — подтверждённая сумма в пределах бюджета.")
-    elif status == "over_budget":
-        lines.append(
-            f"Лимит: {_money(limit, currency)} — подтверждённое превышение "
-            f"на {_money(float(report['over_by']), currency)}."
-        )
-    elif status == "estimated":
-        lines.append(
-            f"Лимит: {_money(limit, currency)}. Это ориентировочная оценка, "
-            "а не подтверждённая цена; соответствие бюджету не гарантировано."
-        )
-    elif status == "partial":
-        lines.append(
-            f"Лимит: {_money(limit, currency)}. Оценка неполная; часть расходов "
-            "может быть не учтена. Нельзя подтвердить, что поездка уложится в бюджет."
-        )
-
-    notes = report.get("notes")
-    if notes:
-        lines.extend(["", f"**Допущения:** {notes}"])
-    if confidence in {"estimated", "partial"}:
-        lines.extend(["", "Перед бронированием уточните цены и доступность у поставщиков."])
-    return "\n".join(lines)
-
-
-def _with_budget_section(markdown: str, report: dict[str, Any]) -> str:
-    section = _render_budget_table(report)
-    if BUDGET_MARKER in markdown:
-        return markdown.replace(BUDGET_MARKER, section)
-    if not section:
-        return markdown
-    return f"{markdown.rstrip()}\n\n{section}"
+    rows = "\n".join(
+        f"| {LABELS[k]} | {_money(report['breakdown'][k], cur)} |" for k in COST_KEYS
+    )
+    limit = _money(report["limit"], cur)
+    verdict = {
+        "verified": f"Лимит: {limit} — подтверждённая сумма в пределах бюджета.",
+        "over_budget": (
+            f"Лимит: {limit} — подтверждённое превышение "
+            f"на {_money(report['over_by'], cur)}."
+        ),
+        "estimated": (
+            f"Лимит: {limit}. Это ориентировочная оценка, а не подтверждённая цена; "
+            "часть расходов может быть не учтена. Уточните цены перед бронированием."
+        ),
+    }[status]
+    notes = f"\n\n**Допущения:** {report['notes']}" if report["notes"] else ""
+    title = "## Оценка бюджета" if status == "estimated" else "## Бюджет"
+    return (
+        f"{title}\n\n| Статья | Стоимость |\n|---|---:|\n{rows}\n"
+        f"| **Итого** | **{_money(report['total'], cur)}** |\n\n{verdict}{notes}"
+    )
 
 
 def budget_check(state: AgentState) -> dict[str, Any]:
-    """Формирует отчёт. Не делает выводов о бюджете на основании оценок."""
     plan = state.get("plan") or {}
     request = state.get("request") or {}
+    report = _build_report(plan, request.get("budget"), request.get("currency") or "EUR")
+
     markdown = str(plan.get("markdown") or "")
-    currency = str(request.get("currency") or "EUR")
-    raw_limit = request.get("budget")
-    confidence = str(plan.get("costs_confidence") or "unknown")
-    allowed_confidence = {"exact", "estimated", "partial", "unknown"}
-    if confidence not in allowed_confidence:
-        confidence = "unknown"
-
-    if raw_limit is None:
-        report = {
-            "status": "no_budget", "total": None, "limit": None,
-            "fits": None, "over_by": None, "currency": currency,
-            "confidence": confidence, "breakdown": {},
-        }
-        final_md = markdown.replace(BUDGET_MARKER, "").rstrip()
-        return {"budget_report": report, "final_itinerary": final_md,
-                "messages": [AIMessage(content=final_md)]}
-
-    limit = _valid_limit(raw_limit)
-    costs = _valid_costs(plan.get("costs"))
-    costs_valid = plan.get("costs_valid") is True
-    costs_currency = plan.get("costs_currency")
-    error = plan.get("costs_error")
-
-    if limit is None:
-        error = "Указан некорректный бюджет."
-    elif costs is None:
-        error = "В данных о стоимости отсутствуют обязательные категории расходов."
-    elif costs_currency == "MIXED":
-        error = "В плане смешаны несколько валют; без надёжного курса сумму нельзя сложить."
-    elif costs_currency not in (None, currency):
-        error = (
-            f"Валюта расходов ({costs_currency}) не совпадает с валютой бюджета ({currency}). "
-            "Система не пересчитывает валюты без надёжного курса."
-        )
-    elif not costs_valid:
-        error = error or "Стоимость маршрута не прошла проверку."
-    elif confidence == "unknown":
-        error = "Точность оценки неизвестна; сравнение с бюджетом ненадёжно."
-
-    if error:
-        report = {
-            "status": "unverified", "total": None, "limit": limit,
-            "fits": None, "over_by": None, "currency": currency,
-            "confidence": confidence, "breakdown": costs or {}, "error": error,
-        }
-        final_md = _with_budget_section(markdown, report)
-        return {"budget_report": report, "final_itinerary": final_md,
-                "messages": [AIMessage(content=final_md)]}
-
-    assert costs is not None and limit is not None
-    total = sum(costs.values())
-    over_by = max(0.0, total - limit)
-
-    # Только точные суммы позволяют выдать однозначный вердикт.
-    if confidence == "exact":
-        status = "verified" if total <= limit else "over_budget"
-        fits: bool | None = total <= limit
-        reported_over_by: float | None = over_by
-    elif confidence == "estimated":
-        status, fits, reported_over_by = "estimated", None, None
-    else:  # partial
-        status, fits, reported_over_by = "partial", None, None
-
-    report = {
-        "status": status,
-        "total": total,
-        "limit": limit,
-        "fits": fits,
-        "over_by": reported_over_by,
-        "currency": currency,
-        "confidence": confidence,
-        "breakdown": costs,
-        "notes": plan.get("costs_notes") or "",
-    }
-    result: dict[str, Any] = {"budget_report": report}
-
-    # Оценочные суммы всегда доходят до пользователя сразу: не запускаем
-    # автоматические циклы, основанные на предположительных цифрах.
-    if status != "over_budget" or state.get("replan_count", 0) >= state.get("max_replans", 2):
-        final_md = _with_budget_section(markdown, report)
-        result["final_itinerary"] = final_md
-        result["messages"] = [AIMessage(content=final_md)]
-    return result
+    section = _render(report)
+    if BUDGET_MARKER in markdown:
+        final_md = markdown.replace(BUDGET_MARKER, section)
+    else:
+        final_md = f"{markdown.rstrip()}\n\n{section}"
+    return {"budget_report": report, "final_itinerary": final_md.rstrip()}
 
 
 def route_after_budget(state: AgentState) -> str:
     """Автоматический replan только при подтверждённом превышении бюджета."""
-    report = state.get("budget_report") or {}
-    if report.get("status") != "over_budget":
-        return "end"
-    if state.get("replan_count", 0) >= state.get("max_replans", 2):
-        return "end"
-    return "replan"
+    over = (state.get("budget_report") or {}).get("status") == "over_budget"
+    can_replan = state.get("replan_count", 0) < state.get("max_replans", 2)
+    return "replan" if over and can_replan else "end"

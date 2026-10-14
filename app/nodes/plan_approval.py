@@ -3,6 +3,7 @@
 import logging
 from typing import Any
 
+from langchain_core.messages import AIMessage
 from langgraph.types import interrupt
 
 from app.agent.state import AgentState
@@ -13,32 +14,31 @@ logger = logging.getLogger(__name__)
 def plan_approval(state: AgentState) -> dict[str, Any]:
     """Останавливает граф и передаёт фронтенду план вместе с отчётом бюджета."""
     plan = state.get("plan") or {}
-    budget_report = state.get("budget_report") or {}
-    request = state.get("request") or {}
     plan_markdown = state.get("final_itinerary") or plan.get("markdown") or ""
 
     decision = interrupt({
         "type": "plan_approval",
         "plan_markdown": plan_markdown,
-        "budget_report": budget_report,
-        "request": request,
+        "budget_report": state.get("budget_report") or {},
+        "request": state.get("request") or {},
     })
 
+    # Не используем bool(value): bool("false") == True.
     if isinstance(decision, dict):
-        # Не используем bool(value): bool("false") == True.
         approved = decision.get("approved") is True
-        comment_value = decision.get("comment")
-        comment = comment_value.strip() if isinstance(comment_value, str) else None
+        raw_comment = decision.get("comment")
+        comment = raw_comment.strip() if isinstance(raw_comment, str) else ""
     else:
         approved = decision is True
-        comment = None
+        comment = ""
 
-    if approved:
-        logger.info("Пользователь подтвердил маршрут")
-        return {"plan_decision": "approved", "plan_comment": None}
-
-    logger.info("Пользователь отклонил маршрут")
-    return {"plan_decision": "rejected", "plan_comment": comment or None}
+    logger.info("Пользователь %s маршрут", "подтвердил" if approved else "отклонил")
+    return {
+        # Сообщение добавляется здесь, после interrupt, чтобы не дублироваться при resume.
+        "messages": [AIMessage(content=plan_markdown)],
+        "plan_decision": "approved" if approved else "rejected",
+        "plan_comment": None if approved else (comment or None),
+    }
 
 
 def route_after_plan_approval(state: AgentState) -> str:
@@ -49,9 +49,7 @@ def route_after_plan_approval(state: AgentState) -> str:
     revisions = state.get("plan_revision_count", 0)
     max_revisions = state.get("max_plan_revisions", 5)
     if revisions >= max_revisions:
-        logger.warning(
-            "plan_revision_count=%d >= max_plan_revisions=%d — завершаем",
-            revisions, max_revisions,
-        )
+        logger.warning("plan_revision_count=%d >= max_plan_revisions=%d — завершаем",
+                       revisions, max_revisions)
         return "end"
     return "replan"

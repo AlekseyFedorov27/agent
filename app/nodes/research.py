@@ -14,56 +14,40 @@ async def research(state: AgentState) -> dict[str, Any]:
     request = state.get("request") or {}
     destination = (request.get("destination") or "").strip()
     country = (request.get("country") or "").strip()
-    interests = request.get("interests") or []
-
     if not destination and not country:
         raise ValueError("Узел research вызван без destination и country")
 
-    search_location = country or destination
-    filters = None
-    if country:
-        filters = {"country_ru": country}
-    elif destination:
-        filters = None
-    interests_text = " ".join(str(item) for item in interests if item)
+    location = country or destination
+    filters = {"country_ru": country} if country else None
+    interests = " ".join(str(i) for i in request.get("interests") or [] if i)
+
     queries = {
-        "attractions": f"{search_location} достопримечательности что посмотреть {interests_text}".strip(),
-        "restaurants": f"{search_location} рестораны еда местная кухня бюджет",
-        "rules": f"{search_location} виза транспорт правила сезон",
+        "attractions": f"{location} достопримечательности что посмотреть {interests}".strip(),
+        "restaurants": f"{location} рестораны еда местная кухня бюджет",
+        "rules": f"{location} виза транспорт правила сезон",
     }
 
-    factory = get_session_factory()
-    # Один AsyncSession используется последовательно: AsyncSession нельзя
-    # безопасно шарить между конкурентными запросами.
+    results: dict[str, list[dict[str, Any]]] = {}
     try:
-        async with factory() as session:
-            results: dict[str, list[dict[str, Any]]] = {}
+        # Один AsyncSession используется последовательно: его нельзя
+        # безопасно шарить между конкурентными запросами.
+        async with get_session_factory()() as session:
             for category, query in queries.items():
-                documents = await search_knowledge(
-                    session, query, top_k=5, filters=filters,
-                )
-                # Убираем дубликаты и сохраняем метаданные/оценку для трассировки.
-                unique: list[dict[str, Any]] = []
+                documents = await search_knowledge(session, query, top_k=5, filters=filters)
                 seen: set[str] = set()
-                for document in documents:
-                    doc_id = str(document.get("doc_id") or "")
+                unique = []
+                for doc in documents:
+                    doc_id = str(doc.get("doc_id") or "")
                     if doc_id and doc_id in seen:
                         continue
-                    if doc_id:
-                        seen.add(doc_id)
-                    unique.append(document)
+                    seen.add(doc_id)
+                    unique.append(doc)
                 results[category] = unique
     except Exception as exc:
-        logger.exception("RAG-поиск не выполнен для направления %r", search_location)
+        logger.exception("RAG-поиск не выполнен для направления %r", location)
         raise RuntimeError(
-            f"Не удалось выполнить поиск по базе знаний для направления {search_location!r}"
+            f"Не удалось выполнить поиск по базе знаний для направления {location!r}"
         ) from exc
 
-    logger.info(
-        "RAG завершён для %r: attractions=%d, restaurants=%d, rules=%d",
-        search_location,
-        len(results["attractions"]),
-        len(results["restaurants"]),
-        len(results["rules"]),
-    )
+    logger.info("RAG завершён для %r: %s", location, {k: len(v) for k, v in results.items()})
     return {"research": results}
