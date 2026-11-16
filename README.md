@@ -1,5 +1,7 @@
 # Travel Planning Agent
 
+## видео работы агента (https://github.com/AlekseyFedorov27/agent/blob/main/screen-recording-2026-11-16-212159_dGDOT8d3.mp4)
+
 **Серверный ИИ-агент для планирования путешествий на LangGraph + FastAPI + PostgreSQL/pgvector, с подтверждением плана человеком (Human-in-the-Loop), RAG по базе знаний и детерминированной проверкой бюджета.**
 
 ![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)
